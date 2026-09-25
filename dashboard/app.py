@@ -133,17 +133,37 @@ def build_price_sentiment_chart(frame: pd.DataFrame, ticker: str) -> go.Figure:
     )
 
     figure.update_layout(
-        title=f"{ticker} — sentiment vs. price",
-        height=520,
-        margin=dict(l=10, r=10, t=50, b=10),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+        height=460,
+        margin=dict(l=10, r=10, t=48, b=10),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.04, xanchor="right", x=1
+        ),
         hovermode="x unified",
-        bargap=0.4,
+        bargap=0.45,
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
     )
-    figure.update_xaxes(title_text="Time (UTC)")
-    figure.update_yaxes(title_text="Price", secondary_y=False)
+    figure.update_xaxes(
+        title_text="Time (UTC)",
+        showgrid=False,
+        showline=True,
+        linecolor="rgba(148,163,184,0.3)",
+    )
     figure.update_yaxes(
-        title_text="Sentiment", range=[-1, 1], secondary_y=True, zeroline=True
+        title_text="Price ($)",
+        secondary_y=False,
+        showgrid=True,
+        gridcolor="rgba(148,163,184,0.12)",
+        zeroline=False,
+    )
+    figure.update_yaxes(
+        title_text="Sentiment",
+        range=[-1.05, 1.05],
+        tickvals=[-1, -0.5, 0, 0.5, 1],
+        secondary_y=True,
+        showgrid=False,
+        zeroline=True,
+        zerolinecolor="rgba(148,163,184,0.35)",
     )
     return figure
 
@@ -227,6 +247,7 @@ def main() -> None:
         col4.metric("Biggest mover (watchlist)", "—")
 
     # Main chart.
+    st.subheader(f"{ticker} — sentiment vs. price")
     st.plotly_chart(
         build_price_sentiment_chart(aligned, ticker), use_container_width=True
     )
