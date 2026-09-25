@@ -36,3 +36,11 @@ def run_once() -> dict[str, object]:
 
     logger.info("Pipeline run complete: %s", results)
     return results
+
+
+if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    run_once()
