@@ -252,54 +252,52 @@ def main() -> None:
         build_price_sentiment_chart(aligned, ticker), use_container_width=True
     )
 
-    # Watchlist signals + latest headlines.
-    left, right = st.columns([1, 2])
+    # Watchlist signals — compact table, natural width.
+    st.subheader("Sentiment movers")
+    st.caption(f"Change vs. prior hour ≥ {threshold:.1f}")
+    if signals.empty:
+        st.write("No sharp moves in the latest window.")
+    else:
+        st.dataframe(
+            signals.rename(
+                columns={
+                    "ticker": "Ticker",
+                    "average_score": "Now",
+                    "previous_score": "Prev",
+                    "delta": "Δ",
+                }
+            ),
+            hide_index=True,
+            use_container_width=False,
+            column_config={
+                "Now": st.column_config.NumberColumn(format="%.2f"),
+                "Prev": st.column_config.NumberColumn(format="%.2f"),
+                "Δ": st.column_config.NumberColumn(format="%+.2f"),
+            },
+        )
 
-    with left:
-        st.subheader("Sentiment movers")
-        st.caption(f"Change vs. prior hour ≥ {threshold:.1f}")
-        if signals.empty:
-            st.write("No sharp moves in the latest window.")
-        else:
-            st.dataframe(
-                signals.rename(
-                    columns={
-                        "ticker": "Ticker",
-                        "average_score": "Now",
-                        "previous_score": "Prev",
-                        "delta": "Δ",
-                    }
+    # Latest headlines — full page width, source dropped to reduce clutter.
+    st.subheader(f"Latest {ticker} headlines")
+    if headlines.empty:
+        st.write("No scored headlines yet.")
+    else:
+        st.dataframe(
+            headlines.drop(columns=["source"]),
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "published_at": st.column_config.DatetimeColumn(
+                    "Published (UTC)", format="YYYY-MM-DD HH:mm", width="small"
                 ),
-                hide_index=True,
-                use_container_width=True,
-                column_config={
-                    "Now": st.column_config.NumberColumn(format="%.2f"),
-                    "Prev": st.column_config.NumberColumn(format="%.2f"),
-                    "Δ": st.column_config.NumberColumn(format="%+.2f"),
-                },
-            )
-
-    with right:
-        st.subheader(f"Latest {ticker} headlines")
-        if headlines.empty:
-            st.write("No scored headlines yet.")
-        else:
-            st.dataframe(
-                headlines,
-                hide_index=True,
-                use_container_width=True,
-                column_config={
-                    "published_at": st.column_config.DatetimeColumn(
-                        "Published (UTC)", format="YYYY-MM-DD HH:mm"
-                    ),
-                    "title": st.column_config.TextColumn("Headline", width="large"),
-                    "sentiment": "Label",
-                    "score": st.column_config.NumberColumn("Score", format="%+.2f"),
-                    "topic": "Topic",
-                    "source": "Source",
-                    "url": st.column_config.LinkColumn("Link", display_text="open"),
-                },
-            )
+                "title": st.column_config.TextColumn("Headline", width="large"),
+                "sentiment": st.column_config.TextColumn("Label", width="small"),
+                "score": st.column_config.NumberColumn("Score", format="%+.2f", width="small"),
+                "topic": st.column_config.TextColumn("Topic", width="medium"),
+                "url": st.column_config.LinkColumn(
+                    "Link", display_text="open", width="small"
+                ),
+            },
+        )
 
 
 if __name__ == "__main__":
