@@ -54,5 +54,19 @@ def get_connection() -> duckdb.DuckDBPyConnection:
 	connection = duckdb.connect(str(DB_PATH))
 	_initialize_schema(connection)
 	return connection
+
+
+def get_readonly_connection() -> duckdb.DuckDBPyConnection:
+	"""Return a read-only connection with timestamps rendered in UTC.
+
+	Read-only openers take a shared lock, so several readers (the API, the
+	dashboard) can query the warehouse at once. Raises FileNotFoundError if
+	the warehouse has not been created yet (run the pipeline first).
+	"""
+	if not DB_PATH.exists():
+		raise FileNotFoundError(f"Warehouse not found at {DB_PATH}")
+	connection = duckdb.connect(str(DB_PATH), read_only=True)
+	connection.execute("SET TimeZone='UTC'")
+	return connection
     
 
