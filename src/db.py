@@ -32,6 +32,20 @@ def _initialize_schema(connection: duckdb.DuckDBPyConnection) -> None:
 		)
 		"""
 	)
+	connection.execute(
+		"""
+		CREATE TABLE IF NOT EXISTS prices (
+			ticker VARCHAR NOT NULL,
+		timestamp TIMESTAMPTZ NOT NULL,
+			open DOUBLE,
+		high DOUBLE,
+			low DOUBLE,
+			close DOUBLE,
+			volume BIGINT,
+			PRIMARY KEY (ticker, timestamp)
+		)
+		"""
+	)
 
 
 def get_connection() -> duckdb.DuckDBPyConnection:
