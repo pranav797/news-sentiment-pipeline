@@ -6,7 +6,7 @@ from config import DB_PATH
 
 
 def _initialize_schema(connection: duckdb.DuckDBPyConnection) -> None:
-	"""Create the Phase 1 tables if they do not already exist."""
+	"""Create the pipeline tables if they do not already exist."""
 	connection.execute(
 		"""
 		CREATE TABLE IF NOT EXISTS news (
@@ -16,6 +16,19 @@ def _initialize_schema(connection: duckdb.DuckDBPyConnection) -> None:
 			source VARCHAR NOT NULL,
 			url VARCHAR NOT NULL,
 			published_at TIMESTAMPTZ NOT NULL
+		)
+		"""
+	)
+	connection.execute(
+		"""
+		CREATE TABLE IF NOT EXISTS sentiment (
+			headline_id VARCHAR PRIMARY KEY,
+			sentiment VARCHAR NOT NULL CHECK (
+				sentiment IN ('positive', 'neutral', 'negative')
+			),
+			score DOUBLE NOT NULL CHECK (score >= -1 AND score <= 1),
+			topic VARCHAR NOT NULL,
+			scored_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)
 		"""
 	)
