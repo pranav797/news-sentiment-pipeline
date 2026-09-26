@@ -3,6 +3,7 @@
 import logging
 
 from aggregate import run_aggregation
+from finbert import enrich_unscored_finbert
 from ingest_news import fetch_all_news, store_news
 from ingest_prices import ingest_prices
 from sentiment import enrich_unscored_news
@@ -23,6 +24,11 @@ def run_once() -> dict[str, object]:
         results["sentiment"] = enrich_unscored_news()
     except Exception:
         logger.exception("Sentiment enrichment failed; continuing pipeline run")
+
+    try:
+        results["finbert"] = enrich_unscored_finbert()
+    except Exception:
+        logger.exception("FinBERT enrichment failed; continuing pipeline run")
 
     try:
         results["prices"] = ingest_prices()

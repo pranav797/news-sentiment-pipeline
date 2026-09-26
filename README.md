@@ -37,6 +37,9 @@ as a **monitoring and early-warning tool** — not a trading system.
   `negative`), a numeric score in `[-1, 1]`, and a short topic label, using an
   LLM that returns validated structured JSON. Only unscored headlines are sent
   to the model, which keeps cost and latency bounded.
+- **Scores each headline a second time with FinBERT**, a finance-tuned model run
+  locally, and reconciles the two scorers so their agreement can be measured — a
+  general model checked against a domain specialist.
 - **Ingests intraday price bars** for the watchlist and upserts them so re-runs
   never duplicate data.
 - **Aligns sentiment and price** onto a shared hourly grid per ticker and
@@ -98,7 +101,7 @@ the writer and each other.
 | Language       | Python 3.11+                              |
 | News ingestion | `feedparser` (RSS, no API key)            |
 | Price data     | `yfinance`                                |
-| Sentiment      | OpenAI `gpt-4o-mini` (structured JSON)    |
+| Sentiment      | OpenAI `gpt-4o-mini` (structured JSON) + FinBERT (`transformers`) |
 | Storage        | DuckDB (embedded, SQL, time-series)       |
 | Scheduling     | APScheduler (in-process)                  |
 | API            | FastAPI + Uvicorn                         |
@@ -113,9 +116,11 @@ All timestamps are stored in UTC.
 |--------------------|----------------------|-------------------------------------------------------------------|
 | `news`             | one row per headline | `id` (hash), `ticker`, `title`, `source`, `url`, `published_at`   |
 | `sentiment`        | one row per headline | `headline_id`, `sentiment`, `score`, `topic`, `scored_at`         |
+| `sentiment_finbert`| one row per headline | `headline_id`, `label`, `score`, `scored_at`                     |
 | `prices`           | one intraday bar     | `ticker`, `timestamp`, `open/high/low/close`, `volume`            |
 | `sentiment_hourly` | ticker × hour        | `average_score`, `article_count`, `positive_share`, `negative_share` |
 | `aligned`          | ticker × hour        | sentiment metrics + `open/high/low/close`, `volume`, `hourly_return` |
+| `sentiment_comparison` | view, per headline | LLM vs. FinBERT label + score, `labels_agree`, `score_gap`    |
 
 `aligned` is built with a full outer join so nothing is dropped: market-hours
 buckets keep their prices even without news, and after-hours news keeps its
@@ -131,6 +136,7 @@ news-sentiment-pipeline/
 │   ├── db.py               # DuckDB connection helpers + schema
 │   ├── ingest_news.py      # RSS ingestion + hash deduplication
 │   ├── sentiment.py        # LLM headline scoring
+│   ├── finbert.py          # FinBERT headline scoring (finance-tuned)
 │   ├── ingest_prices.py    # yfinance price bars
 │   ├── aggregate.py        # hourly buckets + sentiment/price alignment
 │   └── pipeline.py         # one full run_once() cycle
@@ -162,6 +168,9 @@ source .venv/bin/activate
 
 pip install -r requirements.txt
 ```
+
+The requirements include `torch` and `transformers` for FinBERT; the FinBERT
+model (~440 MB) downloads automatically on first use and is cached thereafter.
 
 ### Configure
 
@@ -219,6 +228,8 @@ as the scheduler.
 | GET    | `/sentiment/{ticker}`| Hourly sentiment series for one ticker. Optional `?hours=N`.      |
 | GET    | `/aligned/{ticker}`  | Aligned sentiment + price series for charting. Optional `?hours=N`. |
 | GET    | `/signals`           | Tickers whose sentiment moved sharply vs. the prior hour. Optional `?threshold=`. |
+| GET    | `/compare`           | LLM vs. FinBERT agreement across the watchlist (rate, score gap, confusion). |
+| GET    | `/compare/{ticker}`  | The same comparison for one ticker.                               |
 
 Example:
 
@@ -243,6 +254,21 @@ curl "http://127.0.0.1:8000/aligned/AAPL?hours=48"
 - **Read-only concurrency.** The API and dashboard open the warehouse read-only,
   so they coexist with the scheduler and degrade gracefully (503 / a friendly
   message) if the store is briefly locked or not yet initialized.
+
+## Two-model sentiment comparison
+
+Every headline is scored by two independent models — a general LLM
+(`gpt-4o-mini`) and FinBERT, a finance-tuned classifier run locally on CPU — and
+their outputs are reconciled in the `sentiment_comparison` view, surfaced through
+`GET /compare` and a dashboard panel. Both scores are mapped to the same signed
+`[-1, 1]` scale so they compare directly.
+
+On a recent sample the two agreed on the label about **54%** of the time. The
+largest source of disagreement was headlines the LLM read as *positive* but
+FinBERT rated *neutral*: the specialist is noticeably more conservative about
+calling news positive. Running two scorers side by side both hedges against
+either model's blind spots and makes that difference in behavior measurable
+rather than assumed.
 
 ## Limitations
 
