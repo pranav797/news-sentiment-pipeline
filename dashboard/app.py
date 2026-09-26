@@ -68,6 +68,18 @@ def load_headlines(ticker: str, limit: int = 20) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300)
+def load_comparison(ticker: str) -> pd.DataFrame:
+    sql = """
+        SELECT title, published_at, llm_label, llm_score,
+               finbert_label, finbert_score, labels_agree
+        FROM sentiment_comparison
+        WHERE ticker = ?
+        ORDER BY published_at DESC
+    """
+    return _df(sql, [ticker])
+
+
+@st.cache_data(ttl=300)
 def load_signals(threshold: float = 0.3) -> pd.DataFrame:
     sql = """
         WITH ranked AS (
@@ -298,6 +310,49 @@ def main() -> None:
                 ),
             },
         )
+
+    # Two-model comparison — LLM vs. FinBERT (Phase 8). Loaded resiliently so
+    # an older warehouse without the view doesn't blank the page.
+    try:
+        comparison = load_comparison(ticker)
+    except Exception:
+        comparison = pd.DataFrame()
+
+    st.subheader("Model comparison — LLM vs. FinBERT")
+    if comparison.empty:
+        st.write("No FinBERT scores yet. Run the pipeline to populate them.")
+    else:
+        agreement = float(comparison["labels_agree"].mean())
+        disagreements = comparison[~comparison["labels_agree"]]
+        mcol1, mcol2, mcol3 = st.columns(3)
+        mcol1.metric("Headlines compared", len(comparison))
+        mcol2.metric("Label agreement", f"{agreement:.0%}")
+        mcol3.metric("Disagreements", len(disagreements))
+
+        st.caption("Headlines where the two models assigned different labels")
+        if disagreements.empty:
+            st.write("The two models agree on every scored headline.")
+        else:
+            st.dataframe(
+                disagreements[
+                    ["title", "llm_label", "llm_score", "finbert_label", "finbert_score"]
+                ],
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "title": st.column_config.TextColumn("Headline", width="large"),
+                    "llm_label": st.column_config.TextColumn("LLM", width="small"),
+                    "llm_score": st.column_config.NumberColumn(
+                        "LLM score", format="%+.2f", width="small"
+                    ),
+                    "finbert_label": st.column_config.TextColumn(
+                        "FinBERT", width="small"
+                    ),
+                    "finbert_score": st.column_config.NumberColumn(
+                        "FinBERT score", format="%+.2f", width="small"
+                    ),
+                },
+            )
 
 
 if __name__ == "__main__":

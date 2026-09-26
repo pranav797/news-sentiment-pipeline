@@ -6,6 +6,8 @@ Endpoints:
   GET /sentiment/{ticker}  — recent hourly sentiment series for one ticker
   GET /aligned/{ticker}    — sentiment + price series for charting
   GET /signals             — tickers whose sentiment moved sharply last hour
+  GET /compare             — LLM vs. FinBERT agreement across the watchlist
+  GET /compare/{ticker}    — LLM vs. FinBERT agreement for one ticker
 
 The API opens the DuckDB warehouse read-only, so it can run alongside the
 scheduler and the dashboard. Run it with:
@@ -118,6 +120,20 @@ class Signal(BaseModel):
     article_count: int
 
 
+class ConfusionCell(BaseModel):
+    llm_label: str
+    finbert_label: str
+    count: int
+
+
+class ModelComparison(BaseModel):
+    ticker: Optional[str] = None
+    compared: int
+    agreement_rate: Optional[float] = None
+    avg_abs_score_gap: Optional[float] = None
+    confusion: list[ConfusionCell] = []
+
+
 # --- Endpoints ---------------------------------------------------------------
 @app.get("/", include_in_schema=False)
 def root() -> RedirectResponse:
@@ -225,6 +241,72 @@ def signals(
         ORDER BY ABS(average_score - previous_score) DESC
     """
     return _safe_query(connection, sql, [threshold])
+
+
+@app.get("/compare", response_model=ModelComparison)
+def compare_all(
+    connection: duckdb.DuckDBPyConnection = Depends(get_db),
+) -> ModelComparison:
+    """LLM vs. FinBERT agreement across the whole watchlist."""
+    return _compare(connection, None)
+
+
+@app.get("/compare/{ticker}", response_model=ModelComparison)
+def compare_ticker(
+    ticker: str,
+    connection: duckdb.DuckDBPyConnection = Depends(get_db),
+) -> ModelComparison:
+    """LLM vs. FinBERT agreement for one ticker."""
+    symbol = validate_ticker(ticker)
+    return _compare(connection, symbol)
+
+
+def _compare(
+    connection: duckdb.DuckDBPyConnection, ticker: Optional[str]
+) -> ModelComparison:
+    """Summarize agreement between the two scorers, optionally for one ticker."""
+    where = ""
+    params: list = []
+    if ticker is not None:
+        where = "WHERE ticker = ?"
+        params = [ticker]
+
+    summary = _safe_query(
+        connection,
+        f"""
+        SELECT
+            COUNT(*) AS compared,
+            AVG(CASE WHEN labels_agree THEN 1.0 ELSE 0.0 END) AS agreement_rate,
+            AVG(ABS(score_gap)) AS avg_abs_score_gap
+        FROM sentiment_comparison
+        {where}
+        """,
+        params,
+    )
+    row = summary[0] if summary else {}
+    compared = int(row.get("compared") or 0)
+
+    confusion: list[dict] = []
+    if compared:
+        confusion = _safe_query(
+            connection,
+            f"""
+            SELECT llm_label, finbert_label, COUNT(*) AS count
+            FROM sentiment_comparison
+            {where}
+            GROUP BY llm_label, finbert_label
+            ORDER BY count DESC
+            """,
+            params,
+        )
+
+    return ModelComparison(
+        ticker=ticker,
+        compared=compared,
+        agreement_rate=row.get("agreement_rate"),
+        avg_abs_score_gap=row.get("avg_abs_score_gap"),
+        confusion=confusion,
+    )
 
 
 def _safe_query(
