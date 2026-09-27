@@ -77,7 +77,8 @@ def _df(sql: str, params: list) -> pd.DataFrame:
 def load_aligned(ticker: str, hours: int | None) -> pd.DataFrame:
     sql = """
         SELECT time_bucket, average_score, article_count, positive_share,
-               negative_share, open, high, low, close, volume, hourly_return
+               negative_share, scorer, open, high, low, close, volume,
+               hourly_return
         FROM aligned
         WHERE ticker = ?
     """
@@ -92,12 +93,11 @@ def load_aligned(ticker: str, hours: int | None) -> pd.DataFrame:
 @st.cache_data(ttl=300)
 def load_headlines(ticker: str, limit: int = 20) -> pd.DataFrame:
     sql = """
-        SELECT n.published_at, n.title, s.sentiment, s.score, s.topic,
-               n.source, n.url
-        FROM news n
-        JOIN sentiment s ON s.headline_id = n.id
-        WHERE n.ticker = ?
-        ORDER BY n.published_at DESC
+        SELECT published_at, title, label AS sentiment, score, topic,
+               scorer, publisher AS source, url
+        FROM headline_sentiment
+        WHERE ticker = ?
+        ORDER BY published_at DESC
         LIMIT ?
     """
     return _df(sql, [ticker, limit])
@@ -131,9 +131,13 @@ def load_signals(threshold: float = 0.3) -> pd.DataFrame:
                 ticker,
                 time_bucket,
                 average_score,
+                scorer,
                 LAG(average_score) OVER (
                     PARTITION BY ticker ORDER BY time_bucket
                 ) AS previous_score,
+                LAG(scorer) OVER (
+                    PARTITION BY ticker ORDER BY time_bucket
+                ) AS previous_scorer,
                 ROW_NUMBER() OVER (
                     PARTITION BY ticker ORDER BY time_bucket DESC
                 ) AS recency
@@ -147,6 +151,9 @@ def load_signals(threshold: float = 0.3) -> pd.DataFrame:
         FROM ranked
         WHERE recency = 1
           AND previous_score IS NOT NULL
+          -- Compare like with like: a switch between the LLM and FinBERT is
+          -- a change of model, not a change in sentiment.
+          AND previous_scorer = scorer
           AND ABS(average_score - previous_score) >= ?
         ORDER BY ABS(average_score - previous_score) DESC
     """
@@ -171,22 +178,33 @@ def build_price_sentiment_chart(frame: pd.DataFrame, ticker: str) -> go.Figure:
         secondary_y=False,
     )
 
+    # One bar trace per scoring model, so FinBERT-fallback hours are visibly
+    # distinct (hatched) from LLM-scored hours.
     sentiment = frame.dropna(subset=["average_score"])
-    bar_colors = [
-        POSITIVE_COLOR if value >= 0 else NEGATIVE_COLOR
-        for value in sentiment["average_score"]
-    ]
-    figure.add_trace(
-        go.Bar(
-            x=sentiment["time_bucket"],
-            y=sentiment["average_score"],
-            name="Avg sentiment",
-            marker_color=bar_colors,
-            opacity=0.55,
-            hovertemplate="%{x}<br>sentiment %{y:.2f}<extra></extra>",
-        ),
-        secondary_y=True,
-    )
+    for scorer, model, label, pattern in [
+        ("llm", "LLM", "Avg sentiment (LLM)", ""),
+        ("finbert", "FinBERT", "Avg sentiment (FinBERT fallback)", "/"),
+    ]:
+        bars = sentiment[sentiment["scorer"] == scorer]
+        if bars.empty:
+            continue
+        figure.add_trace(
+            go.Bar(
+                x=bars["time_bucket"],
+                y=bars["average_score"],
+                name=label,
+                marker=dict(
+                    color=[
+                        POSITIVE_COLOR if value >= 0 else NEGATIVE_COLOR
+                        for value in bars["average_score"]
+                    ],
+                    pattern=dict(shape=pattern, fgcolor="rgba(255,255,255,0.6)"),
+                ),
+                opacity=0.55,
+                hovertemplate=f"%{{x}}<br>sentiment %{{y:.2f}} ({model})<extra></extra>",
+            ),
+            secondary_y=True,
+        )
 
     figure.update_layout(
         height=460,
@@ -195,6 +213,9 @@ def build_price_sentiment_chart(frame: pd.DataFrame, ticker: str) -> go.Figure:
             orientation="h", yanchor="bottom", y=1.04, xanchor="right", x=1
         ),
         hovermode="x unified",
+        # Each hour belongs to exactly one model's trace, so overlay keeps
+        # every bar centred on its timestamp instead of grouping side by side.
+        barmode="overlay",
         bargap=0.45,
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
@@ -281,10 +302,15 @@ def main() -> None:
         st.warning("Data is temporarily unavailable. Please refresh in a moment.")
         return
 
-    # Be upfront when live LLM scoring is paused, so stale sentiment isn't
-    # mistaken for current sentiment. Prices keep updating either way.
+    # Say which model is producing live sentiment, so FinBERT-fallback or
+    # stale scores are never mistaken for live LLM scores.
     if is_llm_enabled():
-        st.success("Live: new headlines are scored for sentiment as they arrive.")
+        st.success("Live: new headlines are scored by the LLM as they arrive.")
+    elif ENABLE_FINBERT:
+        st.info(
+            "LLM scoring is paused, so new headlines are scored by FinBERT "
+            "(hatched bars) until it's back on."
+        )
     else:
         try:
             last_scored = load_last_scored()
@@ -373,6 +399,7 @@ def main() -> None:
         st.write("No scored headlines yet.")
     else:
         display = headlines.drop(columns=["source"])
+        display["scorer"] = display["scorer"].map({"llm": "LLM", "finbert": "FinBERT"})
         display["url"] = display["url"].map(_safe_link)
         st.dataframe(
             display,
@@ -386,6 +413,7 @@ def main() -> None:
                 "sentiment": st.column_config.TextColumn("Label", width="small"),
                 "score": st.column_config.NumberColumn("Score", format="%+.2f", width="small"),
                 "topic": st.column_config.TextColumn("Topic", width="medium"),
+                "scorer": st.column_config.TextColumn("Scored by", width="small"),
                 "url": st.column_config.LinkColumn(
                     "Link", display_text="open", width="small"
                 ),

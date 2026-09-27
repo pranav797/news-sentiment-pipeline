@@ -69,6 +69,9 @@ SENTIMENT_MODEL = "gpt-4o-mini"
 LLM_SWITCH_FILE = DATA_DIR / "llm_scoring.json"
 LLM_SCORING_DEFAULT = os.environ.get("LLM_SCORING_DEFAULT", "on").lower() == "on"
 LLM_DEFAULT_ON_HOURS = 4  # `llm.sh on` auto-expires after this unless told otherwise
+# When LLM scoring is turned back on, only headlines this recent are sent to
+# the LLM; older ones keep their FinBERT score. Keeps demo spend minimal.
+LLM_BACKFILL_HOURS = 48
 
 # FinBERT second-opinion scoring. It is the one memory-heavy feature (~750 MB
 # for torch + the model); set ENABLE_FINBERT=false on small hosts and the

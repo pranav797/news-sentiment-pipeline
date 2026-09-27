@@ -118,8 +118,9 @@ All timestamps are stored in UTC.
 | `sentiment`        | one row per headline | `headline_id`, `sentiment`, `score`, `topic`, `scored_at`         |
 | `sentiment_finbert`| one row per headline | `headline_id`, `label`, `score`, `scored_at`                     |
 | `prices`           | one intraday bar     | `ticker`, `timestamp`, `open/high/low/close`, `volume`            |
-| `sentiment_hourly` | ticker × hour        | `average_score`, `article_count`, `positive_share`, `negative_share` |
-| `aligned`          | ticker × hour        | sentiment metrics + `open/high/low/close`, `volume`, `hourly_return` |
+| `headline_sentiment` | view, per headline | primary `label` + `score` (LLM, else FinBERT), `scorer` |
+| `sentiment_hourly` | ticker × hour        | `average_score`, `article_count`, `positive_share`, `negative_share`, `scorer` |
+| `aligned`          | ticker × hour        | sentiment metrics + `scorer`, `open/high/low/close`, `volume`, `hourly_return` |
 | `sentiment_comparison` | view, per headline | LLM vs. FinBERT label + score, `labels_agree`, `score_gap`    |
 
 `aligned` is built with a full outer join so nothing is dropped: market-hours
@@ -316,10 +317,20 @@ sudo ./llm.sh status
 ```
 
 `on` also restarts the worker, which runs a pipeline cycle immediately, so fresh
-scores appear within minutes. While scoring is off, news and prices keep
-updating (and FinBERT keeps scoring, if enabled); the dashboard shows a banner
-saying live sentiment is paused and when headlines were last scored. Headlines
-that arrive while it is off are scored the next time it is on, newest first.
+scores appear within minutes.
+
+While LLM scoring is off, the site stays live at no cost: news and prices keep
+updating, and **FinBERT becomes the fallback scorer** for new headlines. Those
+hours appear as hatched bars on the chart, headlines show which model scored
+them, and a banner explains that LLM scoring is paused. When scoring is turned
+back on, only headlines from the last 48 hours (`LLM_BACKFILL_HOURS`) are sent to
+the LLM; older ones keep their FinBERT score. If FinBERT is also disabled, the
+banner instead shows when headlines were last scored.
+
+Each hour is scored by a single model, never a blend: the LLM's scores if any
+headline in that hour has one, otherwise FinBERT's. Sharp-mover signals only
+compare hours scored by the same model, because the two are calibrated
+differently — switching models is not a change in sentiment.
 
 The switch is a file on the data volume, which only the worker can write — the
 public API and dashboard can read it but not change it — so only someone with
@@ -371,7 +382,9 @@ Every headline is scored by two independent models — a general LLM
 (`gpt-4o-mini`) and FinBERT, a finance-tuned classifier run locally on CPU — and
 their outputs are reconciled in the `sentiment_comparison` view, surfaced through
 `GET /compare` and a dashboard panel. Both scores are mapped to the same signed
-`[-1, 1]` scale so they compare directly.
+`[-1, 1]` scale so they compare directly. FinBERT also serves as the fallback
+scorer whenever LLM scoring is switched off (see
+[Turning LLM scoring on and off](#turning-llm-scoring-on-and-off)).
 
 On a recent sample the two agreed on the label about **54%** of the time. The
 largest source of disagreement was headlines the LLM read as *positive* but

@@ -7,6 +7,11 @@ Two steps:
      share) -> ``sentiment_hourly``.
   2. ``build_aligned`` — put sentiment and prices on the same (ticker, hour)
      grid and add an hourly return -> ``aligned``.
+
+Sentiment comes from the ``headline_sentiment`` view: the LLM score where a
+headline has one, otherwise FinBERT (e.g. while LLM scoring is switched off).
+Each bucket is scored by a single model — never a blend of the two — and its
+``scorer`` column records which.
 """
 
 import logging
@@ -28,27 +33,53 @@ def _bucket_interval(bucket: str) -> str:
 
 
 def aggregate_sentiment() -> int:
-	"""Rebuild hourly sentiment aggregates and return the bucket count."""
+	"""Rebuild hourly sentiment aggregates and return the bucket count.
+
+	A bucket uses the LLM's scores if any headline in it has one, otherwise
+	FinBERT's; the two models' scores are never averaged together, because
+	they are calibrated differently.
+	"""
 	interval = _bucket_interval(SENTIMENT_BUCKET)
 
 	with get_connection() as connection:
 		connection.execute(
 			f"""
 			CREATE OR REPLACE TABLE sentiment_hourly AS
+			WITH scored AS (
+				SELECT
+					ticker,
+					time_bucket(INTERVAL '{interval}', published_at) AS time_bucket,
+					score,
+					label,
+					scorer
+				FROM headline_sentiment
+			),
+			bucket_scorer AS (
+				SELECT
+					ticker,
+					time_bucket,
+					CASE WHEN bool_or(scorer = 'llm') THEN 'llm' ELSE 'finbert' END
+						AS scorer
+				FROM scored
+				GROUP BY ticker, time_bucket
+			)
 			SELECT
-				news.ticker,
-				time_bucket(INTERVAL '{interval}', news.published_at)
-					AS time_bucket,
-				AVG(sentiment.score) AS average_score,
+				s.ticker,
+				s.time_bucket,
+				AVG(s.score) AS average_score,
 				COUNT(*) AS article_count,
-				AVG(CASE WHEN sentiment.sentiment = 'positive'
+				AVG(CASE WHEN s.label = 'positive'
 					THEN 1.0 ELSE 0.0 END) AS positive_share,
-				AVG(CASE WHEN sentiment.sentiment = 'negative'
-					THEN 1.0 ELSE 0.0 END) AS negative_share
-			FROM news
-			INNER JOIN sentiment ON sentiment.headline_id = news.id
-			GROUP BY news.ticker, time_bucket
-			ORDER BY news.ticker, time_bucket
+				AVG(CASE WHEN s.label = 'negative'
+					THEN 1.0 ELSE 0.0 END) AS negative_share,
+				b.scorer
+			FROM scored s
+			JOIN bucket_scorer b
+				ON b.ticker = s.ticker
+				AND b.time_bucket = s.time_bucket
+				AND b.scorer = s.scorer
+			GROUP BY s.ticker, s.time_bucket, b.scorer
+			ORDER BY s.ticker, s.time_bucket
 			"""
 		)
 		bucket_count = connection.execute(
@@ -100,6 +131,7 @@ def build_aligned() -> int:
 				COALESCE(s.article_count, 0) AS article_count,
 				s.positive_share,
 				s.negative_share,
+				s.scorer,
 				p.open,
 				p.high,
 				p.low,

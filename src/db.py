@@ -61,6 +61,30 @@ def _initialize_schema(connection: duckdb.DuckDBPyConnection) -> None:
         )
         """
     )
+    # Primary sentiment per headline: the LLM score when the headline has one,
+    # otherwise the FinBERT score (e.g. while LLM scoring is switched off).
+    # `scorer` records which model produced it.
+    connection.execute(
+        """
+        CREATE OR REPLACE VIEW headline_sentiment AS
+        SELECT
+            n.id AS headline_id,
+            n.ticker,
+            n.title,
+            n.source AS publisher,
+            n.url,
+            n.published_at,
+            COALESCE(s.sentiment, f.label) AS label,
+            COALESCE(s.score, f.score) AS score,
+            s.topic,
+            CASE WHEN s.headline_id IS NOT NULL THEN 'llm' ELSE 'finbert' END
+                AS scorer
+        FROM news n
+        LEFT JOIN sentiment s ON s.headline_id = n.id
+        LEFT JOIN sentiment_finbert f ON f.headline_id = n.id
+        WHERE s.headline_id IS NOT NULL OR f.headline_id IS NOT NULL
+        """
+    )
     # Per-headline comparison of the LLM and FinBERT scorers (headlines that
     # both models have scored).
     connection.execute(
