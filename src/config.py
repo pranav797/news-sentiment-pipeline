@@ -60,6 +60,16 @@ SENTIMENT_BUCKET = "1h"  # time grid both sentiment and prices are aligned onto
 # --- Sentiment model ---------------------------------------------------------
 SENTIMENT_MODEL = "gpt-4o-mini"
 
+# Owner-only switch for LLM (OpenAI) scoring, so the API key is used only when
+# you choose (e.g. for a demo). The state lives in a file on the data volume,
+# writable only from the server itself (see src/llm_switch.py and llm.sh).
+# LLM_SCORING_DEFAULT applies when the switch has never been set: "on" keeps
+# local development unchanged; docker-compose sets "off" so a fresh deployment
+# never spends until you turn it on.
+LLM_SWITCH_FILE = DATA_DIR / "llm_scoring.json"
+LLM_SCORING_DEFAULT = os.environ.get("LLM_SCORING_DEFAULT", "on").lower() == "on"
+LLM_DEFAULT_ON_HOURS = 4  # `llm.sh on` auto-expires after this unless told otherwise
+
 # FinBERT second-opinion scoring. It is the one memory-heavy feature (~750 MB
 # for torch + the model); set ENABLE_FINBERT=false on small hosts and the
 # pipeline never loads torch. Set the same value for every service so the

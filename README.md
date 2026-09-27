@@ -136,6 +136,7 @@ news-sentiment-pipeline/
 │   ├── db.py               # DuckDB connection helpers + schema
 │   ├── ingest_news.py      # RSS ingestion + hash deduplication
 │   ├── sentiment.py        # LLM headline scoring
+│   ├── llm_switch.py       # owner-only on/off switch for LLM scoring
 │   ├── finbert.py          # FinBERT headline scoring (finance-tuned)
 │   ├── ingest_prices.py    # yfinance price bars
 │   ├── aggregate.py        # hourly buckets + sentiment/price alignment
@@ -148,6 +149,7 @@ news-sentiment-pipeline/
 │   └── pipeline_flow.py    # Prefect orchestration of the pipeline
 ├── .streamlit/config.toml  # dashboard server hardening
 ├── scheduler.py            # APScheduler entry point
+├── llm.sh                  # server-side LLM scoring switch
 ├── Dockerfile              # one image for all services
 ├── docker-compose.yml      # single-host deployment
 ├── Caddyfile               # reverse proxy + automatic HTTPS
@@ -300,6 +302,31 @@ show or hide that panel; when FinBERT is disabled on the server the switch is
 greyed out, and `GET /compare` reports `finbert_enabled: false`. Visitors can
 change only their own view, never what the server computes.
 
+### Turning LLM scoring on and off
+
+LLM (OpenAI) scoring is controlled by an owner-only switch, and in the Docker
+deployment it is **off by default**, so the API key is used only when you choose.
+From the project directory on the server:
+
+```bash
+sudo ./llm.sh on        # score with the LLM for 4 hours, then switch off automatically
+sudo ./llm.sh on 2      # ... for 2 hours
+sudo ./llm.sh off       # stop now (takes effect even mid-cycle)
+sudo ./llm.sh status
+```
+
+`on` also restarts the worker, which runs a pipeline cycle immediately, so fresh
+scores appear within minutes. While scoring is off, news and prices keep
+updating (and FinBERT keeps scoring, if enabled); the dashboard shows a banner
+saying live sentiment is paused and when headlines were last scored. Headlines
+that arrive while it is off are scored the next time it is on, newest first.
+
+The switch is a file on the data volume, which only the worker can write — the
+public API and dashboard can read it but not change it — so only someone with
+shell access to the server can flip it. If the switch file is missing or
+unreadable, scoring is treated as off. Locally (outside Docker) scoring defaults
+to on; `python src/llm_switch.py on|off|status` works the same way.
+
 ---
 
 ## API reference
@@ -376,6 +403,8 @@ and API clients — as untrusted.
   excluded from Docker images by `.dockerignore`, and in the deployment only the
   worker receives it. The public-facing services never hold the key.
 - Nothing public triggers an OpenAI call, so visitors cannot spend API credit.
+  LLM scoring is off by default in the deployment and can be turned on only
+  from the server (`llm.sh`), with an automatic expiry.
 
 **Untrusted feed content**
 - Feeds are fetched with a timeout and a 5 MB size cap.

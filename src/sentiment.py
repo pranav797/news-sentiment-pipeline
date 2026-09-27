@@ -12,6 +12,7 @@ from config import (
     SENTIMENT_MODEL,
 )
 from db import get_connection
+from llm_switch import is_llm_enabled
 
 client: OpenAI | None = None
 logger = logging.getLogger(__name__)
@@ -19,6 +20,10 @@ logger = logging.getLogger(__name__)
 
 class SentimentResponseError(ValueError):
     """Raised when the model response does not match the sentiment contract."""
+
+
+class LLMScoringPaused(RuntimeError):
+    """Raised when the owner's LLM switch is off; no API call is made."""
 
 
 def _get_client() -> OpenAI:
@@ -60,6 +65,11 @@ def _validate_result(result: object) -> dict:
 
 
 def score_headline(title: str) -> dict:
+    # Checked on every call, so switching LLM scoring off takes effect
+    # immediately — even partway through a pipeline cycle.
+    if not is_llm_enabled():
+        raise LLMScoringPaused("LLM scoring is switched off")
+
     resp = _get_client().chat.completions.create(
         model=SENTIMENT_MODEL,
         messages=[
@@ -99,6 +109,10 @@ def enrich_unscored_news() -> tuple[int, int]:
     scored_count = 0
     skipped_count = 0
 
+    if not is_llm_enabled():
+        logger.info("LLM scoring is switched off; no OpenAI calls this cycle")
+        return scored_count, skipped_count
+
     with get_connection() as connection:
         headlines = connection.execute(
             """
@@ -129,6 +143,9 @@ def enrich_unscored_news() -> tuple[int, int]:
                     ],
                 )
                 scored_count += 1
+            except LLMScoringPaused:
+                logger.info("LLM scoring switched off mid-cycle; stopping")
+                break
             except Exception as error:
                 skipped_count += 1
                 logger.warning(
