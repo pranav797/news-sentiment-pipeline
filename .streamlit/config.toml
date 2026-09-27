@@ -1,0 +1,22 @@
+# Streamlit server hardening for a publicly served dashboard.
+
+[server]
+headless = true
+# Keep Streamlit's built-in CORS and XSRF protections on.
+enableCORS = true
+enableXsrfProtection = true
+# The app serves no static files and accepts no uploads.
+enableStaticServing = false
+maxUploadSize = 1
+# Websocket message cap (MB); dashboard payloads are far smaller.
+maxMessageSize = 50
+
+[client]
+# Never show exception types, messages, or tracebacks to visitors; they are
+# printed to the server console only.
+showErrorDetails = "none"
+# Hide developer options (rerun, clear cache, deploy) from every visitor.
+toolbarMode = "viewer"
+
+[browser]
+gatherUsageStats = false

@@ -15,14 +15,19 @@ scheduler and the dashboard. Run it with:
     uvicorn api.main:app --reload
 """
 
+import logging
+import math
 import sys
+import time
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 import duckdb
-from fastapi import Depends, FastAPI, HTTPException, Query
-from fastapi.responses import RedirectResponse
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
 # Make the shared src/ modules importable regardless of the launch directory.
@@ -30,16 +35,107 @@ SRC_DIR = Path(__file__).resolve().parent.parent / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from config import WATCHLIST  # noqa: E402
+from config import (  # noqa: E402
+    ALLOWED_HOSTS,
+    ENABLE_DOCS,
+    MAX_SERIES_ROWS,
+    MAX_WINDOW_HOURS,
+    RATE_LIMIT_PER_MINUTE,
+    WATCHLIST,
+)
 from db import get_readonly_connection  # noqa: E402
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="News Sentiment Pipeline API",
     description="Near-real-time financial news sentiment aligned with prices.",
     version="1.0.0",
+    docs_url="/docs" if ENABLE_DOCS else None,
+    redoc_url="/redoc" if ENABLE_DOCS else None,
+    openapi_url="/openapi.json" if ENABLE_DOCS else None,
 )
 
 WATCHLIST_SET = {ticker.upper() for ticker in WATCHLIST}
+DOCS_PATH_NAMES = {"docs", "redoc", "openapi.json", "oauth2-redirect"}
+
+
+# --- Rate limiting -----------------------------------------------------------
+class RateLimiter:
+    """In-memory sliding-window limiter keyed by client IP.
+
+    Suited to a single API instance (the deployment here). Running several
+    replicas would need a shared store such as Redis instead. The client table
+    is bounded: stale entries are pruned, and if it is still full of active
+    clients new ones are refused (fail closed) rather than growing memory.
+    """
+
+    def __init__(self, limit: int, window_seconds: float = 60, max_clients: int = 10_000):
+        self.limit = limit
+        self.window = window_seconds
+        self.max_clients = max_clients
+        self._hits: dict[str, deque[float]] = {}
+
+    def check(self, key: str) -> Optional[float]:
+        """Record a request; return seconds to wait if over the limit, else None."""
+        now = time.monotonic()
+        hits = self._hits.get(key)
+        if hits is None:
+            if len(self._hits) >= self.max_clients:
+                self._prune(now)
+                if len(self._hits) >= self.max_clients:
+                    return self.window
+            hits = self._hits[key] = deque()
+
+        while hits and now - hits[0] >= self.window:
+            hits.popleft()
+        if len(hits) >= self.limit:
+            return self.window - (now - hits[0])
+        hits.append(now)
+        return None
+
+    def _prune(self, now: float) -> None:
+        stale = [
+            key for key, hits in self._hits.items()
+            if not hits or now - hits[-1] >= self.window
+        ]
+        for key in stale:
+            del self._hits[key]
+
+
+rate_limiter = RateLimiter(RATE_LIMIT_PER_MINUTE)
+
+
+@app.middleware("http")
+async def rate_limit(request: Request, call_next):
+    client = request.client.host if request.client else "unknown"
+    retry_after = rate_limiter.check(client)
+    if retry_after is not None:
+        return JSONResponse(
+            {"detail": "Rate limit exceeded. Try again later."},
+            status_code=429,
+            headers={"Retry-After": str(max(1, math.ceil(retry_after)))},
+        )
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    # Registered after rate_limit, so it wraps it and also covers 429 responses.
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    # JSON endpoints never need to load anything; Swagger UI does, so skip it.
+    if request.url.path.rstrip("/").split("/")[-1] not in DOCS_PATH_NAMES:
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; frame-ancestors 'none'"
+        )
+    return response
+
+
+# Outermost: reject requests whose Host header isn't one we serve.
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
 
 
 # --- Dependencies ------------------------------------------------------------
@@ -52,9 +148,13 @@ def get_db() -> duckdb.DuckDBPyConnection:
             status_code=503,
             detail="Warehouse not initialized yet. Run the pipeline first.",
         )
-    except duckdb.Error as error:
-        # A running writer holds an exclusive lock; surface it as unavailable.
-        raise HTTPException(status_code=503, detail=f"Warehouse unavailable: {error}")
+    except duckdb.Error:
+        # Typically a running writer holding the lock. Log details server-side;
+        # never return internal error text (file paths etc.) to the client.
+        logger.warning("Warehouse unavailable", exc_info=True)
+        raise HTTPException(
+            status_code=503, detail="Warehouse temporarily unavailable. Retry shortly."
+        )
     try:
         yield connection
     finally:
@@ -65,7 +165,7 @@ def validate_ticker(ticker: str) -> str:
     """Normalize and confirm the ticker is on the watchlist, else 404."""
     normalized = ticker.upper()
     if normalized not in WATCHLIST_SET:
-        raise HTTPException(status_code=404, detail=f"Unknown ticker: {ticker}")
+        raise HTTPException(status_code=404, detail="Unknown ticker")
     return normalized
 
 
@@ -136,8 +236,10 @@ class ModelComparison(BaseModel):
 
 # --- Endpoints ---------------------------------------------------------------
 @app.get("/", include_in_schema=False)
-def root() -> RedirectResponse:
-    return RedirectResponse(url="/docs")
+def root(request: Request) -> RedirectResponse:
+    # Honor the proxy prefix (e.g. /api) so the redirect stays on the API.
+    prefix = request.scope.get("root_path", "")
+    return RedirectResponse(url=f"{prefix}/docs" if ENABLE_DOCS else f"{prefix}/health")
 
 
 @app.get("/health", response_model=Health)
@@ -158,47 +260,73 @@ def tickers() -> TickerList:
     return TickerList(tickers=sorted(WATCHLIST_SET))
 
 
+HoursParam = Query(
+    None,
+    ge=1,
+    le=MAX_WINDOW_HOURS,
+    description=f"Limit to the last N hours (max {MAX_WINDOW_HOURS})",
+)
+
+
 @app.get("/sentiment/{ticker}", response_model=list[SentimentPoint])
 def sentiment(
     ticker: str,
-    hours: Optional[int] = Query(None, ge=1, description="Limit to the last N hours"),
+    hours: Optional[int] = HoursParam,
     connection: duckdb.DuckDBPyConnection = Depends(get_db),
 ) -> list[dict]:
     """Recent hourly sentiment buckets for one ticker, oldest first."""
-    symbol = validate_ticker(ticker)
-    sql = """
-        SELECT time_bucket, average_score, article_count,
-               positive_share, negative_share
-        FROM sentiment_hourly
-        WHERE ticker = ?
-    """
-    params: list = [symbol]
-    if hours is not None:
-        sql += " AND time_bucket >= now() - INTERVAL (?) HOUR"
-        params.append(hours)
-    sql += " ORDER BY time_bucket"
-    return _safe_query(connection, sql, params)
+    return _series(
+        connection,
+        "sentiment_hourly",
+        "time_bucket, average_score, article_count, positive_share, negative_share",
+        validate_ticker(ticker),
+        hours,
+    )
 
 
 @app.get("/aligned/{ticker}", response_model=list[AlignedPoint])
 def aligned(
     ticker: str,
-    hours: Optional[int] = Query(None, ge=1, description="Limit to the last N hours"),
+    hours: Optional[int] = HoursParam,
     connection: duckdb.DuckDBPyConnection = Depends(get_db),
 ) -> list[dict]:
     """Aligned sentiment + price series for one ticker, oldest first."""
-    symbol = validate_ticker(ticker)
-    sql = """
-        SELECT time_bucket, average_score, article_count, positive_share,
-               negative_share, open, high, low, close, volume, hourly_return
-        FROM aligned
-        WHERE ticker = ?
+    return _series(
+        connection,
+        "aligned",
+        "time_bucket, average_score, article_count, positive_share, "
+        "negative_share, open, high, low, close, volume, hourly_return",
+        validate_ticker(ticker),
+        hours,
+    )
+
+
+def _series(
+    connection: duckdb.DuckDBPyConnection,
+    table: str,
+    columns: str,
+    symbol: str,
+    hours: Optional[int],
+) -> list[dict]:
+    """Return a ticker's time series, oldest first, capped at MAX_SERIES_ROWS.
+
+    ``table`` and ``columns`` are fixed strings from the endpoints above, never
+    user input; every user-supplied value is bound as a query parameter.
     """
+    where = "ticker = ?"
     params: list = [symbol]
     if hours is not None:
-        sql += " AND time_bucket >= now() - INTERVAL (?) HOUR"
+        where += " AND time_bucket >= now() - INTERVAL (?) HOUR"
         params.append(hours)
-    sql += " ORDER BY time_bucket"
+    params.append(MAX_SERIES_ROWS)
+    sql = f"""
+        SELECT * FROM (
+            SELECT {columns} FROM {table}
+            WHERE {where}
+            ORDER BY time_bucket DESC
+            LIMIT ?
+        ) ORDER BY time_bucket
+    """
     return _safe_query(connection, sql, params)
 
 

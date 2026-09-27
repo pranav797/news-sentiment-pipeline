@@ -4,7 +4,21 @@ Everything the pipeline needs to know about *what* to pull lives here so the
 watchlist and feed set can be changed in one place.
 """
 
+import os
 from pathlib import Path
+from urllib.parse import quote
+
+from dotenv import load_dotenv
+
+# Load secrets (OPENAI_API_KEY) from the gitignored .env file if present.
+# Existing environment variables win, so a host's secret manager overrides it.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    return int(value) if value else default
+
 
 # --- Paths -------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -33,7 +47,7 @@ YAHOO_FINANCE_RSS = (
 
 def ticker_feeds(ticker: str) -> list[str]:
     """Return the list of RSS feed URLs to poll for a given ticker."""
-    return [YAHOO_FINANCE_RSS.format(ticker=ticker)]
+    return [YAHOO_FINANCE_RSS.format(ticker=quote(ticker, safe=""))]
 
 
 # --- Price ingestion ---------------------------------------------------------
@@ -48,3 +62,31 @@ SENTIMENT_MODEL = "gpt-4o-mini"
 
 # --- Scheduling --------------------------------------------------------------
 SCHEDULE_MINUTES = 30  # how often the scheduler re-runs the full pipeline
+
+# --- Security / abuse limits -------------------------------------------------
+# All overridable via environment variables at deploy time.
+
+# Ingestion: RSS content is untrusted input from the internet.
+FEED_TIMEOUT_SECONDS = _env_int("FEED_TIMEOUT_SECONDS", 15)
+FEED_MAX_BYTES = _env_int("FEED_MAX_BYTES", 5 * 1024 * 1024)  # 5 MB per feed
+MAX_TITLE_LENGTH = 500  # longer "headlines" are dropped as junk/abuse
+ALLOWED_URL_SCHEMES = {"http", "https"}  # blocks javascript:, data:, etc.
+
+# Enrichment: bounds OpenAI spend (and CPU for FinBERT) per pipeline cycle,
+# even if a feed floods the pipeline with headlines.
+MAX_HEADLINES_PER_RUN = _env_int("MAX_HEADLINES_PER_RUN", 200)
+OPENAI_TIMEOUT_SECONDS = 30
+OPENAI_MAX_RETRIES = 2
+OPENAI_MAX_TOKENS = 100  # a sentiment JSON object needs far fewer
+MAX_TOPIC_LENGTH = 60  # LLM output is untrusted too
+
+# API: per-client request budget and response bounds.
+RATE_LIMIT_PER_MINUTE = _env_int("RATE_LIMIT_PER_MINUTE", 60)
+MAX_WINDOW_HOURS = 24 * 365  # upper bound for ?hours=
+MAX_SERIES_ROWS = 5000  # cap on rows returned by a series endpoint
+ENABLE_DOCS = os.environ.get("ENABLE_DOCS", "true").lower() == "true"
+ALLOWED_HOSTS = [
+    host.strip()
+    for host in os.environ.get("ALLOWED_HOSTS", "*").split(",")
+    if host.strip()
+]

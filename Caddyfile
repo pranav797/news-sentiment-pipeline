@@ -1,0 +1,38 @@
+# Public entrypoint. Set DOMAIN (in .env) to your domain and Caddy obtains and
+# renews a TLS certificate automatically; HTTP is redirected to HTTPS.
+#   https://DOMAIN/       -> Streamlit dashboard
+#   https://DOMAIN/api/   -> FastAPI service (docs at /api/docs)
+
+{$DOMAIN:localhost} {
+	encode zstd gzip
+
+	# The app only serves GETs and small websocket frames; refuse large bodies.
+	request_body {
+		max_size 1MB
+	}
+
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+
+	# HSTS only for a real domain (on localhost it would pin HTTPS for every
+	# other local dev server in your browser).
+	@public not host localhost
+	header @public Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+	handle_path /api/* {
+		reverse_proxy api:8000 {
+			# Overwrite (never append) so clients cannot spoof their IP and
+			# dodge the API rate limiter.
+			header_up X-Forwarded-For {remote_host}
+		}
+	}
+
+	handle {
+		reverse_proxy dashboard:8501
+	}
+}

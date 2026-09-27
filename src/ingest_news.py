@@ -4,19 +4,65 @@ import re
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
+from urllib.parse import urlparse
+
 import duckdb
 import feedparser
+import requests
 
-from config import WATCHLIST, ticker_feeds
+from config import (
+    ALLOWED_URL_SCHEMES,
+    FEED_MAX_BYTES,
+    FEED_TIMEOUT_SECONDS,
+    MAX_TITLE_LENGTH,
+    WATCHLIST,
+    ticker_feeds,
+)
 from db import get_connection
 
 logger = logging.getLogger(__name__)
 
+USER_AGENT = "news-sentiment-pipeline/1.0 (+RSS reader)"
+
+
+def _download_feed(feed_url: str) -> bytes:
+    """Fetch a feed with a timeout and a hard size cap.
+
+    Feed content is untrusted: without a timeout a slow server could hang the
+    pipeline, and without a size cap an oversized response could exhaust memory.
+    """
+    with requests.get(
+        feed_url,
+        timeout=FEED_TIMEOUT_SECONDS,
+        headers={"User-Agent": USER_AGENT},
+        stream=True,
+    ) as response:
+        response.raise_for_status()
+        chunks = []
+        total = 0
+        for chunk in response.iter_content(chunk_size=64 * 1024):
+            total += len(chunk)
+            if total > FEED_MAX_BYTES:
+                raise ValueError(f"Feed exceeded {FEED_MAX_BYTES} bytes: {feed_url}")
+            chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _is_safe_url(url: str) -> bool:
+    """Accept only absolute http(s) links (rejects javascript:, data:, etc.)."""
+    parsed = urlparse(url.strip())
+    return parsed.scheme.lower() in ALLOWED_URL_SCHEMES and bool(parsed.netloc)
+
 
 def fetch_feed(feed_url: str, ticker: str) -> list[dict]:
-    feed = feedparser.parse(feed_url)
+    return parse_feed(_download_feed(feed_url), ticker, fallback_source=feed_url)
+
+
+def parse_feed(content: bytes | str, ticker: str, fallback_source: str = "") -> list[dict]:
+    """Parse raw feed content into records, dropping unsafe or junk entries."""
+    feed = feedparser.parse(content)
     records = []
-    feed_source = feed.feed.get("title", feed_url)
+    feed_source = feed.feed.get("title", fallback_source)
 
     for entry in feed.entries:
         title = entry.get("title")
@@ -30,6 +76,14 @@ def fetch_feed(feed_url: str, ticker: str) -> list[dict]:
         ) or feed_source
 
         if not title or not url or not published_at:
+            continue
+
+        if not _is_safe_url(url):
+            logger.warning("Dropping entry with unsafe URL scheme: %.80s", url)
+            continue
+
+        if len(title) > MAX_TITLE_LENGTH:
+            logger.warning("Dropping entry with oversized title (%d chars)", len(title))
             continue
 
         records.append(
@@ -48,7 +102,11 @@ def fetch_ticker_news(ticker: str) -> list[dict]:
     records = []
 
     for feed_url in ticker_feeds(ticker):
-        records.extend(fetch_feed(feed_url, ticker))
+        try:
+            records.extend(fetch_feed(feed_url, ticker))
+        except Exception as error:
+            # One slow or broken feed must not block the rest of the watchlist.
+            logger.warning("Skipping feed for %s: %s", ticker, error)
 
     return records
 

@@ -8,11 +8,16 @@ on CPU.
 
 import logging
 
+from config import MAX_HEADLINES_PER_RUN
 from db import get_connection
 
 logger = logging.getLogger(__name__)
 
 MODEL_NAME = "ProsusAI/finbert"
+# Pin an exact, owner-published commit so a compromised or updated upstream
+# repo can never silently change the weights we load. To upgrade, review the
+# new revision on Hugging Face and update this hash deliberately.
+MODEL_REVISION = "4556d13015211d73dccd3fdd39d39232506f3e43"
 
 _classifier = None
 
@@ -30,7 +35,15 @@ def _get_classifier():
         from transformers import pipeline
 
         logger.info("Loading FinBERT model %s (first run downloads it)", MODEL_NAME)
-        _classifier = pipeline("text-classification", model=MODEL_NAME)
+        _classifier = pipeline(
+            "text-classification",
+            model=MODEL_NAME,
+            revision=MODEL_REVISION,
+            # Load the owner-published weights at the pinned commit rather than
+            # letting transformers fetch an auto-conversion PR branch. torch>=2.6
+            # loads them with weights_only=True, which blocks pickle code execution.
+            model_kwargs={"use_safetensors": False},
+        )
 
     return _classifier
 
@@ -63,7 +76,8 @@ def enrich_unscored_finbert() -> tuple[int, int]:
 
     Mirrors ``sentiment.enrich_unscored_news``: only unscored headlines are
     processed, each is wrapped in try/except, and scored/skipped counts are
-    logged. There is no API cost, so the whole backlog can be scored.
+    logged. At most MAX_HEADLINES_PER_RUN are scored per call (newest first)
+    to bound CPU time per cycle; the remainder is picked up on later runs.
     """
     scored_count = 0
     skipped_count = 0
@@ -76,8 +90,10 @@ def enrich_unscored_finbert() -> tuple[int, int]:
             LEFT JOIN sentiment_finbert
                 ON sentiment_finbert.headline_id = news.id
             WHERE sentiment_finbert.headline_id IS NULL
-            ORDER BY news.published_at
-            """
+            ORDER BY news.published_at DESC
+            LIMIT ?
+            """,
+            [MAX_HEADLINES_PER_RUN],
         ).fetchall()
 
         for headline_id, title in headlines:
