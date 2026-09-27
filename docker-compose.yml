@@ -29,10 +29,12 @@ services:
     env_file: .env
     environment:
       MAX_HEADLINES_PER_RUN: ${MAX_HEADLINES_PER_RUN:-200}
+      ENABLE_FINBERT: ${ENABLE_FINBERT:-true}
     volumes:
       - warehouse:/app/data
       - hf-cache:/home/app/.cache/huggingface
-    mem_limit: 3g  # torch + FinBERT
+    # Measured ~900 MB peak with FinBERT, ~200 MB without (ENABLE_FINBERT=false).
+    mem_limit: 1536m
     networks: [backend]
 
   api:
@@ -54,6 +56,7 @@ services:
       ALLOWED_HOSTS: ${DOMAIN:-localhost},localhost
       RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-60}
       ENABLE_DOCS: ${ENABLE_DOCS:-true}
+      ENABLE_FINBERT: ${ENABLE_FINBERT:-true}
     volumes:
       - warehouse:/app/data:ro  # readers can never modify the warehouse
     read_only: true
@@ -75,6 +78,8 @@ services:
       - dashboard/app.py
       - --server.address=0.0.0.0
       - --server.port=8501
+    environment:
+      ENABLE_FINBERT: ${ENABLE_FINBERT:-true}
     volumes:
       - warehouse:/app/data:ro
     read_only: true

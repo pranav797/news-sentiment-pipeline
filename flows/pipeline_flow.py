@@ -26,7 +26,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from aggregate import run_aggregation  # noqa: E402
-from config import SCHEDULE_MINUTES  # noqa: E402
+from config import ENABLE_FINBERT, SCHEDULE_MINUTES  # noqa: E402
 from finbert import enrich_unscored_finbert  # noqa: E402
 from ingest_news import fetch_all_news, store_news  # noqa: E402
 from ingest_prices import ingest_prices  # noqa: E402
@@ -82,6 +82,9 @@ def pipeline_flow() -> dict[str, object]:
         ("prices", ingest_prices_task),
         ("aggregation", aggregate_task),
     ]
+    if not ENABLE_FINBERT:
+        logger.info("FinBERT disabled (ENABLE_FINBERT=false); skipping")
+        stages = [stage for stage in stages if stage[0] != "finbert"]
 
     for key, stage_task in stages:
         state = stage_task(return_state=True)

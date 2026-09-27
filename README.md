@@ -283,8 +283,22 @@ data once the first cycle finishes (the first run also downloads FinBERT, so it
 takes a few minutes). For a local trial, leave `DOMAIN=localhost` and open
 `https://localhost` (Caddy uses a locally trusted certificate).
 
-The worker needs about 3 GB of memory for torch and FinBERT; the other services
-are small.
+### Memory and the FinBERT toggle
+
+FinBERT is the only memory-heavy feature. Measured peak memory per service:
+
+| Service              | With FinBERT | `ENABLE_FINBERT=false` |
+|----------------------|--------------|------------------------|
+| Worker               | ~900 MB      | ~180 MB                |
+| API                  | ~130 MB      | ~130 MB                |
+| Dashboard            | ~150 MB      | ~150 MB                |
+
+On a small host, set `ENABLE_FINBERT=false` in `.env`: the pipeline skips
+FinBERT scoring and never loads torch, bringing the whole stack to roughly
+500 MB. The dashboard's **LLM vs. FinBERT comparison** switch lets each visitor
+show or hide that panel; when FinBERT is disabled on the server the switch is
+greyed out, and `GET /compare` reports `finbert_enabled: false`. Visitors can
+change only their own view, never what the server computes.
 
 ---
 

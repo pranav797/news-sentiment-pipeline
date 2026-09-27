@@ -60,6 +60,12 @@ SENTIMENT_BUCKET = "1h"  # time grid both sentiment and prices are aligned onto
 # --- Sentiment model ---------------------------------------------------------
 SENTIMENT_MODEL = "gpt-4o-mini"
 
+# FinBERT second-opinion scoring. It is the one memory-heavy feature (~750 MB
+# for torch + the model); set ENABLE_FINBERT=false on small hosts and the
+# pipeline never loads torch. Set the same value for every service so the
+# dashboard and API know whether comparison data is being produced.
+ENABLE_FINBERT = os.environ.get("ENABLE_FINBERT", "true").lower() == "true"
+
 # --- Scheduling --------------------------------------------------------------
 SCHEDULE_MINUTES = 30  # how often the scheduler re-runs the full pipeline
 

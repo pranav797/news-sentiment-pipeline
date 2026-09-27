@@ -38,6 +38,7 @@ if str(SRC_DIR) not in sys.path:
 from config import (  # noqa: E402
     ALLOWED_HOSTS,
     ENABLE_DOCS,
+    ENABLE_FINBERT,
     MAX_SERIES_ROWS,
     MAX_WINDOW_HOURS,
     RATE_LIMIT_PER_MINUTE,
@@ -228,6 +229,7 @@ class ConfusionCell(BaseModel):
 
 class ModelComparison(BaseModel):
     ticker: Optional[str] = None
+    finbert_enabled: bool
     compared: int
     agreement_rate: Optional[float] = None
     avg_abs_score_gap: Optional[float] = None
@@ -430,6 +432,7 @@ def _compare(
 
     return ModelComparison(
         ticker=ticker,
+        finbert_enabled=ENABLE_FINBERT,
         compared=compared,
         agreement_rate=row.get("agreement_rate"),
         avg_abs_score_gap=row.get("avg_abs_score_gap"),

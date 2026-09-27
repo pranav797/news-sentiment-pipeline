@@ -3,7 +3,8 @@
 import logging
 
 from aggregate import run_aggregation
-from finbert import enrich_unscored_finbert
+from config import ENABLE_FINBERT
+from finbert import enrich_unscored_finbert  # cheap: torch is imported lazily
 from ingest_news import fetch_all_news, store_news
 from ingest_prices import ingest_prices
 from sentiment import enrich_unscored_news
@@ -25,10 +26,13 @@ def run_once() -> dict[str, object]:
     except Exception:
         logger.exception("Sentiment enrichment failed; continuing pipeline run")
 
-    try:
-        results["finbert"] = enrich_unscored_finbert()
-    except Exception:
-        logger.exception("FinBERT enrichment failed; continuing pipeline run")
+    if ENABLE_FINBERT:
+        try:
+            results["finbert"] = enrich_unscored_finbert()
+        except Exception:
+            logger.exception("FinBERT enrichment failed; continuing pipeline run")
+    else:
+        logger.info("FinBERT disabled (ENABLE_FINBERT=false); skipping")
 
     try:
         results["prices"] = ingest_prices()
