@@ -1,0 +1,23 @@
+# Secrets — never baked into an image. Supplied at runtime via env_file.
+.env
+.env.*
+!.env.example
+
+# Local state and tooling
+.git/
+.venv/
+venv/
+data/
+**/__pycache__/
+*.py[cod]
+*.duckdb
+*.duckdb.wal
+.pytest_cache/
+.vscode/
+.idea/
+.claude/
+
+# Not needed at runtime (docs, notes, deploy config)
+*.md
+docker-compose.yml
+Caddyfile

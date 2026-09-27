@@ -1,5 +1,8 @@
 """Shared DuckDB connection and schema helpers."""
 
+import os
+import tempfile
+
 import duckdb
 
 from config import DB_PATH
@@ -98,6 +101,12 @@ def get_readonly_connection() -> duckdb.DuckDBPyConnection:
     """
     if not DB_PATH.exists():
         raise FileNotFoundError(f"Warehouse not found at {DB_PATH}")
-    connection = duckdb.connect(str(DB_PATH), read_only=True)
+    connection = duckdb.connect(
+        str(DB_PATH),
+        read_only=True,
+        # Readers may run on a read-only mount (see docker-compose.yml), so any
+        # temp/spill files go to the system temp dir, never next to the file.
+        config={"temp_directory": os.path.join(tempfile.gettempdir(), "duckdb")},
+    )
     connection.execute("SET TimeZone='UTC'")
     return connection

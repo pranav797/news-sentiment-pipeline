@@ -146,8 +146,12 @@ news-sentiment-pipeline/
 │   └── app.py              # Streamlit dashboard
 ├── flows/
 │   └── pipeline_flow.py    # Prefect orchestration of the pipeline
+├── .streamlit/config.toml  # dashboard server hardening
 ├── scheduler.py            # APScheduler entry point
-└── requirements.txt
+├── Dockerfile              # one image for all services
+├── docker-compose.yml      # single-host deployment
+├── Caddyfile               # reverse proxy + automatic HTTPS
+└── requirements.txt        # pinned, audited dependencies
 ```
 
 ---
@@ -225,6 +229,10 @@ python flows/pipeline_flow.py
 Each stage is a Prefect task; the network/API stages retry automatically, and
 the flow-run timeline in the UI shows every run's success, failure, and retries.
 
+The Prefect server has no authentication. It binds to `127.0.0.1` by default —
+keep it that way, and never expose it publicly. The Docker deployment below
+uses the APScheduler loop instead, so no Prefect server is deployed.
+
 ### Run the API
 
 ```bash
@@ -241,6 +249,42 @@ streamlit run dashboard/app.py
 
 The API and dashboard read the warehouse read-only and can run at the same time
 as the scheduler.
+
+---
+
+## Deployment
+
+The repository ships a single-host deployment: one Docker image, run as four
+services by `docker-compose.yml`.
+
+| Service     | Role                                              | Reachable from       |
+|-------------|---------------------------------------------------|----------------------|
+| `caddy`     | Reverse proxy, automatic HTTPS                    | Internet (80/443)    |
+| `dashboard` | Streamlit dashboard at `/`                        | Caddy only           |
+| `api`       | FastAPI service at `/api` (docs at `/api/docs`)   | Caddy only           |
+| `worker`    | Scheduled pipeline (`scheduler.py`)               | Nothing (outbound only) |
+
+The warehouse lives on a named volume shared by the services: the worker mounts
+it read-write, the API and dashboard read-only.
+
+### Deploy
+
+On a server with Docker installed and a domain whose DNS points at it:
+
+```bash
+git clone <your-repo-url> && cd news-sentiment-pipeline
+cp .env.example .env    # set OPENAI_API_KEY and DOMAIN
+docker compose up -d --build
+```
+
+Caddy obtains a TLS certificate for `DOMAIN` on first start. The worker runs a
+pipeline cycle immediately and then every `SCHEDULE_MINUTES`; the dashboard shows
+data once the first cycle finishes (the first run also downloads FinBERT, so it
+takes a few minutes). For a local trial, leave `DOMAIN=localhost` and open
+`https://localhost` (Caddy uses a locally trusted certificate).
+
+The worker needs about 3 GB of memory for torch and FinBERT; the other services
+are small.
 
 ---
 
@@ -307,6 +351,62 @@ pipeline logic is unchanged; the tasks call the same functions in `src/`.
 This is orchestration for a single-node, in-process pipeline: the win is
 reliability and observability (retries, run history, a scheduling UI), not
 distributed execution or horizontal scale.
+
+## Security
+
+The system treats everything from the internet — feed content, model output,
+and API clients — as untrusted.
+
+**Secrets**
+- `OPENAI_API_KEY` is read from the environment or a gitignored `.env`; it is
+  excluded from Docker images by `.dockerignore`, and in the deployment only the
+  worker receives it. The public-facing services never hold the key.
+- Nothing public triggers an OpenAI call, so visitors cannot spend API credit.
+
+**Untrusted feed content**
+- Feeds are fetched with a timeout and a 5 MB size cap.
+- Only absolute `http(s)` links are accepted, so a malicious feed cannot plant
+  `javascript:` or `data:` links; the dashboard re-checks links before
+  rendering them. Oversized titles are dropped.
+
+**Untrusted model output and cost control**
+- LLM responses are validated against a strict schema (label enum, score range)
+  and the topic is length-capped; the prompt instructs the model to treat
+  headlines as data, never instructions.
+- Each call has a timeout, bounded retries, and a token cap; each pipeline cycle
+  scores at most `MAX_HEADLINES_PER_RUN` headlines. Setting a monthly usage limit
+  on the OpenAI project adds a hard ceiling.
+- The FinBERT model is pinned to an exact upstream commit and loaded with
+  `weights_only` deserialization, so upstream changes cannot silently alter or
+  inject code into what runs.
+
+**API**
+- Per-client rate limiting (default 60 requests/minute, `429` with
+  `Retry-After`), with client IPs taken from the proxy in a way clients cannot
+  spoof.
+- Every input is validated: tickers against the watchlist, `hours` and
+  `threshold` against bounds; all SQL uses bound parameters.
+- Responses are size-capped, error messages never expose internals, and security
+  headers (`Content-Security-Policy`, `X-Frame-Options`, `nosniff`) are set.
+  `ALLOWED_HOSTS` rejects unexpected `Host` headers; `ENABLE_DOCS=false` hides
+  the interactive docs.
+
+**Dashboard**
+- Tracebacks and developer menus are hidden from visitors
+  (`.streamlit/config.toml`); XSRF protection stays on.
+- The shared-cache "Refresh" action is rate-limited server-wide.
+
+**Infrastructure**
+- HTTPS with HSTS via Caddy; only Caddy is exposed to the internet.
+- Containers run as an unprivileged user with all Linux capabilities dropped,
+  `no-new-privileges`, memory and process limits, and read-only root
+  filesystems for the public-facing services.
+- Dependencies are pinned to versions audited with `pip-audit`. Re-run
+  `pip-audit` whenever you upgrade them.
+
+The dashboard and API are intentionally public and read-only; they expose only
+public news and market data. Put them behind authentication (for example, at
+the proxy) before adding anything non-public.
 
 ## Limitations
 

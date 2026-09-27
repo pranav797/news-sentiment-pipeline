@@ -6,8 +6,12 @@ or not the API process is up. Launch with:
     streamlit run dashboard/app.py
 """
 
+import logging
 import sys
+import threading
+import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -25,6 +29,37 @@ from db import get_readonly_connection  # noqa: E402
 POSITIVE_COLOR = "#16a34a"
 NEGATIVE_COLOR = "#dc2626"
 PRICE_COLOR = "#2563eb"
+
+logger = logging.getLogger(__name__)
+
+# "Refresh data" clears a cache shared by every visitor, so rate-limit it
+# server-wide to stop one visitor from hammering the warehouse.
+REFRESH_COOLDOWN_SECONDS = 30
+_refresh_lock = threading.Lock()
+_last_refresh = 0.0
+
+
+def _try_refresh() -> bool:
+    """Clear the data cache unless it was cleared within the cooldown."""
+    global _last_refresh
+    with _refresh_lock:
+        now = time.monotonic()
+        if now - _last_refresh < REFRESH_COOLDOWN_SECONDS:
+            return False
+        _last_refresh = now
+    st.cache_data.clear()
+    return True
+
+
+def _safe_link(url: object) -> object:
+    """Keep only absolute http(s) links; anything else (javascript:, data:)
+    is dropped so it can never render as a clickable link."""
+    if not isinstance(url, str):
+        return None
+    parsed = urlparse(url.strip())
+    if parsed.scheme.lower() in {"http", "https"} and parsed.netloc:
+        return url
+    return None
 
 
 # --- Data access -------------------------------------------------------------
@@ -200,8 +235,10 @@ def main() -> None:
         )
         threshold = st.slider("Signal threshold", 0.0, 2.0, 0.3, 0.1)
         if st.button("Refresh data"):
-            st.cache_data.clear()
-            st.rerun()
+            if _try_refresh():
+                st.rerun()
+            else:
+                st.caption("Data was refreshed moments ago — try again shortly.")
 
     hours = None if window == 0 else window
 
@@ -215,8 +252,10 @@ def main() -> None:
             "(`python scheduler.py` or a manual run), then refresh."
         )
         return
-    except Exception as error:  # e.g. warehouse briefly locked by a writer
-        st.warning(f"Warehouse temporarily unavailable: {error}")
+    except Exception:  # e.g. warehouse briefly locked by a writer
+        # Log internally; don't show error text (file paths etc.) to visitors.
+        logger.warning("Warehouse unavailable", exc_info=True)
+        st.warning("Data is temporarily unavailable. Please refresh in a moment.")
         return
 
     if aligned.empty:
@@ -293,8 +332,10 @@ def main() -> None:
     if headlines.empty:
         st.write("No scored headlines yet.")
     else:
+        display = headlines.drop(columns=["source"])
+        display["url"] = display["url"].map(_safe_link)
         st.dataframe(
-            headlines.drop(columns=["source"]),
+            display,
             hide_index=True,
             use_container_width=True,
             column_config={

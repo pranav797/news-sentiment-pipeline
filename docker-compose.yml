@@ -1,0 +1,120 @@
+# Single-host deployment: worker + API + dashboard behind a Caddy reverse proxy.
+#
+#   docker compose up -d --build
+#
+# Only Caddy publishes ports (80/443, automatic HTTPS). The API and dashboard
+# are reachable solely through it; the worker has no inbound access at all.
+# The Prefect server is intentionally NOT deployed: it has no authentication.
+# The worker uses the APScheduler loop (scheduler.py) instead.
+
+x-hardening: &hardening
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  pids_limit: 256
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  worker:
+    <<: *hardening
+    build: .
+    command: ["python", "scheduler.py"]
+    # The only service that receives the OpenAI key.
+    env_file: .env
+    environment:
+      MAX_HEADLINES_PER_RUN: ${MAX_HEADLINES_PER_RUN:-200}
+    volumes:
+      - warehouse:/app/data
+      - hf-cache:/home/app/.cache/huggingface
+    mem_limit: 3g  # torch + FinBERT
+    networks: [backend]
+
+  api:
+    <<: *hardening
+    build: .
+    command:
+      - uvicorn
+      - api.main:app
+      - --host=0.0.0.0
+      - --port=8000
+      - --root-path=/api
+      # Trust X-Forwarded-For so rate limiting sees real client IPs. Safe only
+      # because this port is never published: Caddy is the sole client, and it
+      # overwrites X-Forwarded-For with the true remote address.
+      - --proxy-headers
+      - --forwarded-allow-ips=*
+      - --no-server-header
+    environment:
+      ALLOWED_HOSTS: ${DOMAIN:-localhost},localhost
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-60}
+      ENABLE_DOCS: ${ENABLE_DOCS:-true}
+    volumes:
+      - warehouse:/app/data:ro  # readers can never modify the warehouse
+    read_only: true
+    tmpfs: [/tmp, /home/app]
+    mem_limit: 512m
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  dashboard:
+    <<: *hardening
+    build: .
+    command:
+      - streamlit
+      - run
+      - dashboard/app.py
+      - --server.address=0.0.0.0
+      - --server.port=8501
+    volumes:
+      - warehouse:/app/data:ro
+    read_only: true
+    tmpfs: [/tmp, /home/app]
+    mem_limit: 1g
+    networks: [backend]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  caddy:
+    <<: *hardening
+    image: caddy:2-alpine
+    cap_add:
+      - NET_BIND_SERVICE  # bind 80/443 despite cap_drop ALL
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"  # HTTP/3
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    mem_limit: 256m
+    depends_on:
+      api:
+        condition: service_healthy
+      dashboard:
+        condition: service_healthy
+    networks: [backend]
+
+networks:
+  backend:
+
+volumes:
+  warehouse:
+  hf-cache:
+  caddy-data:
+  caddy-config:

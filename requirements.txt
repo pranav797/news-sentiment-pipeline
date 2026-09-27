@@ -1,19 +1,21 @@
-duckdb>=1.1
-pandas>=2.2
-feedparser>=6.0
-yfinance>=0.2
-openai>=1.40
-apscheduler>=3.10
-fastapi>=0.115
-uvicorn[standard]>=0.30
-streamlit>=1.38
-plotly>=5.24
-python-dotenv>=1.0
-requests>=2.32
+# Pinned to exact versions audited with pip-audit (no known vulnerabilities).
+# To upgrade: bump a version, reinstall, and re-run `pip-audit` before committing.
+duckdb==1.5.5
+pandas==3.0.6
+feedparser==6.0.14
+yfinance==1.7.0
+openai==3.16.2
+apscheduler==3.11.3
+fastapi==0.141.1
+uvicorn[standard]==0.53.0
+streamlit==1.64.0
+plotly==7.1.0
+python-dotenv==1.2.3
+requests==2.34.2
 # FinBERT (finance-specific sentiment) — Phase 8
-transformers>=4.44
-torch
+transformers==5.17.0
+torch==2.14.0
 # Prefect orchestration — Phase 9
-prefect>=3.0
+prefect==3.8.7
 # optional / stretch:
 # praw>=7.7             # Reddit / social ingestion
