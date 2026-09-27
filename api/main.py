@@ -195,6 +195,7 @@ class SentimentPoint(BaseModel):
     article_count: int
     positive_share: float
     negative_share: float
+    scorer: str  # "llm" or "finbert" (fallback while LLM scoring is off)
 
 
 class AlignedPoint(BaseModel):
@@ -203,6 +204,7 @@ class AlignedPoint(BaseModel):
     article_count: int
     positive_share: Optional[float] = None
     negative_share: Optional[float] = None
+    scorer: Optional[str] = None
     open: Optional[float] = None
     high: Optional[float] = None
     low: Optional[float] = None
@@ -219,6 +221,7 @@ class Signal(BaseModel):
     delta: float
     direction: str
     article_count: int
+    scorer: str
 
 
 class ConfusionCell(BaseModel):
@@ -280,7 +283,8 @@ def sentiment(
     return _series(
         connection,
         "sentiment_hourly",
-        "time_bucket, average_score, article_count, positive_share, negative_share",
+        "time_bucket, average_score, article_count, positive_share, "
+        "negative_share, scorer",
         validate_ticker(ticker),
         hours,
     )
@@ -297,7 +301,7 @@ def aligned(
         connection,
         "aligned",
         "time_bucket, average_score, article_count, positive_share, "
-        "negative_share, open, high, low, close, volume, hourly_return",
+        "negative_share, scorer, open, high, low, close, volume, hourly_return",
         validate_ticker(ticker),
         hours,
     )
@@ -339,7 +343,12 @@ def signals(
     ),
     connection: duckdb.DuckDBPyConnection = Depends(get_db),
 ) -> list[dict]:
-    """Tickers whose latest hourly sentiment jumped vs. the prior bucket."""
+    """Tickers whose latest hourly sentiment jumped vs. the prior bucket.
+
+    Only buckets scored by the same model are compared: the LLM and FinBERT
+    are calibrated differently, so a switch between them would otherwise look
+    like a sentiment move.
+    """
     sql = """
         WITH ranked AS (
             SELECT
@@ -347,9 +356,13 @@ def signals(
                 time_bucket,
                 average_score,
                 article_count,
+                scorer,
                 LAG(average_score) OVER (
                     PARTITION BY ticker ORDER BY time_bucket
                 ) AS previous_score,
+                LAG(scorer) OVER (
+                    PARTITION BY ticker ORDER BY time_bucket
+                ) AS previous_scorer,
                 ROW_NUMBER() OVER (
                     PARTITION BY ticker ORDER BY time_bucket DESC
                 ) AS recency
@@ -363,10 +376,12 @@ def signals(
             average_score - previous_score AS delta,
             CASE WHEN average_score - previous_score >= 0 THEN 'up' ELSE 'down' END
                 AS direction,
-            article_count
+            article_count,
+            scorer
         FROM ranked
         WHERE recency = 1
           AND previous_score IS NOT NULL
+          AND previous_scorer = scorer
           AND ABS(average_score - previous_score) >= ?
         ORDER BY ABS(average_score - previous_score) DESC
     """

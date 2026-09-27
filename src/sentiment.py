@@ -1,9 +1,10 @@
 import json
 import logging
 
-from openai import OpenAI
+from openai import AuthenticationError, OpenAI, PermissionDeniedError, RateLimitError
 
 from config import (
+    LLM_BACKFILL_HOURS,
     MAX_HEADLINES_PER_RUN,
     MAX_TOPIC_LENGTH,
     OPENAI_MAX_RETRIES,
@@ -120,10 +121,11 @@ def enrich_unscored_news() -> tuple[int, int]:
             FROM news
             LEFT JOIN sentiment ON sentiment.headline_id = news.id
             WHERE sentiment.headline_id IS NULL
+              AND news.published_at >= now() - INTERVAL (?) HOUR
             ORDER BY news.published_at DESC
             LIMIT ?
             """,
-            [MAX_HEADLINES_PER_RUN],
+            [LLM_BACKFILL_HOURS, MAX_HEADLINES_PER_RUN],
         ).fetchall()
 
         for headline_id, title in headlines:
@@ -145,6 +147,15 @@ def enrich_unscored_news() -> tuple[int, int]:
                 scored_count += 1
             except LLMScoringPaused:
                 logger.info("LLM scoring switched off mid-cycle; stopping")
+                break
+            except (AuthenticationError, PermissionDeniedError, RateLimitError) as error:
+                # Revoked/invalid key, missing permission, or exhausted quota:
+                # every further call would fail too, so stop this cycle now.
+                logger.error(
+                    "OpenAI rejected the request (%s); stopping LLM scoring for "
+                    "this cycle. Check the key, its permissions, and the budget.",
+                    type(error).__name__,
+                )
                 break
             except Exception as error:
                 skipped_count += 1
