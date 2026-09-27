@@ -23,7 +23,7 @@ SRC_DIR = Path(__file__).resolve().parent.parent / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from config import WATCHLIST  # noqa: E402
+from config import ENABLE_FINBERT, WATCHLIST  # noqa: E402
 from db import get_readonly_connection  # noqa: E402
 
 POSITIVE_COLOR = "#16a34a"
@@ -234,6 +234,20 @@ def main() -> None:
             format_func=lambda h: "All" if h == 0 else f"Last {h}h",
         )
         threshold = st.slider("Signal threshold", 0.0, 2.0, 0.3, 0.1)
+        # Per-visitor view setting only. Whether FinBERT runs at all is a
+        # server-side deployment setting (ENABLE_FINBERT), never changeable by
+        # public visitors.
+        show_comparison = st.toggle(
+            "LLM vs. FinBERT comparison",
+            value=ENABLE_FINBERT,
+            disabled=not ENABLE_FINBERT,
+            help=(
+                "Show how the general LLM and the finance-tuned FinBERT model "
+                "score the same headlines."
+                if ENABLE_FINBERT
+                else "FinBERT scoring is turned off on this deployment to save memory."
+            ),
+        )
         if st.button("Refresh data"):
             if _try_refresh():
                 st.rerun()
@@ -351,6 +365,9 @@ def main() -> None:
                 ),
             },
         )
+
+    if not show_comparison:
+        return
 
     # Two-model comparison — LLM vs. FinBERT (Phase 8). Loaded resiliently so
     # an older warehouse without the view doesn't blank the page.
