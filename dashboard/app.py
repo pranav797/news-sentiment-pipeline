@@ -10,8 +10,11 @@ import logging
 import sys
 import threading
 import time
+from datetime import datetime, timezone
+from datetime import time as dtime
 from pathlib import Path
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -23,7 +26,7 @@ SRC_DIR = Path(__file__).resolve().parent.parent / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from config import ENABLE_FINBERT, WATCHLIST  # noqa: E402
+from config import ENABLE_FINBERT, PRICE_INTERVAL, WATCHLIST  # noqa: E402
 from db import get_readonly_connection  # noqa: E402
 from llm_switch import is_llm_enabled  # noqa: E402
 
@@ -112,6 +115,62 @@ def load_last_scored() -> object:
 
 
 @st.cache_data(ttl=300)
+def load_latest_price(ticker: str) -> pd.DataFrame:
+    """The most recent price bar for a ticker, regardless of the chart window."""
+    return _df(
+        "SELECT timestamp, close FROM prices WHERE ticker = ? AND close IS NOT NULL "
+        "ORDER BY timestamp DESC LIMIT 1",
+        [ticker],
+    )
+
+
+# --- Market hours ------------------------------------------------------------
+# NYSE/Nasdaq regular session. Exchange holidays aren't modelled: on a holiday
+# the status reads "delayed" rather than "closed", which is still accurate.
+MARKET_TZ = ZoneInfo("America/New_York")
+MARKET_OPEN = dtime(9, 30)
+MARKET_CLOSE = dtime(16, 0)
+STALE_AFTER = pd.Timedelta(minutes=90)  # hourly bars; allow one missed bar
+
+
+def market_is_open(now: datetime) -> bool:
+    local = now.astimezone(MARKET_TZ)
+    return local.weekday() < 5 and MARKET_OPEN <= local.time() < MARKET_CLOSE
+
+
+def price_status(latest: pd.DataFrame, now: datetime) -> dict | None:
+    """Describe the latest price: its value, when it was set, and whether the
+    market is open ("open"), closed ("closed"), or open but without recent
+    trades ("delayed", e.g. a holiday)."""
+    if latest.empty:
+        return None
+
+    bar_start = pd.Timestamp(latest["timestamp"].iloc[0]).tz_convert("UTC")
+    try:
+        bar_length = pd.Timedelta(PRICE_INTERVAL)
+    except ValueError:
+        bar_length = pd.Timedelta(0)
+    # A bar's close is the price at its end — but the session's last bar is
+    # partial (e.g. 15:30-16:00 ET) and an in-progress bar hasn't ended yet,
+    # so never report a time after the session close or after now.
+    local_start = bar_start.tz_convert(MARKET_TZ)
+    session_close = local_start.normalize() + pd.Timedelta(
+        hours=MARKET_CLOSE.hour, minutes=MARKET_CLOSE.minute
+    )
+    as_of = min(
+        bar_start + bar_length, session_close.tz_convert("UTC"), pd.Timestamp(now)
+    )
+
+    if not market_is_open(now):
+        state = "closed"
+    elif pd.Timestamp(now) - as_of <= STALE_AFTER:
+        state = "open"
+    else:
+        state = "delayed"
+    return {"price": float(latest["close"].iloc[0]), "as_of": as_of, "state": state}
+
+
+@st.cache_data(ttl=300)
 def load_comparison(ticker: str) -> pd.DataFrame:
     sql = """
         SELECT title, published_at, llm_label, llm_score,
@@ -161,22 +220,63 @@ def load_signals(threshold: float = 0.3) -> pd.DataFrame:
 
 
 # --- Chart -------------------------------------------------------------------
-def build_price_sentiment_chart(frame: pd.DataFrame, ticker: str) -> go.Figure:
-    """Dual-axis chart: price line (left) and average sentiment bars (right)."""
+def build_price_sentiment_chart(
+    frame: pd.DataFrame,
+    ticker: str,
+    status: dict | None = None,
+    window_start: pd.Timestamp | None = None,
+    now: datetime | None = None,
+) -> go.Figure:
+    """Dual-axis chart: price line (left) and average sentiment bars (right).
+
+    When the market isn't trading, a dashed "last close" line runs from the
+    final trade to now, so the price axis stays meaningful and the gap reads as
+    "no trading" rather than missing data.
+    """
     figure = make_subplots(specs=[[{"secondary_y": True}]])
 
     prices = frame.dropna(subset=["close"])
-    figure.add_trace(
-        go.Scatter(
-            x=prices["time_bucket"],
-            y=prices["close"],
-            name="Price (close)",
-            mode="lines",
-            line=dict(color=PRICE_COLOR, width=2),
-            connectgaps=True,
-        ),
-        secondary_y=False,
-    )
+    if not prices.empty:
+        figure.add_trace(
+            go.Scatter(
+                x=prices["time_bucket"],
+                y=prices["close"],
+                name="Price (close)",
+                mode="lines",
+                line=dict(color=PRICE_COLOR, width=2),
+                connectgaps=True,
+            ),
+            secondary_y=False,
+        )
+
+    if status is not None and status["state"] != "open" and now is not None:
+        # Continue from the last plotted price point, else the window's start.
+        if not prices.empty:
+            start = prices["time_bucket"].max()
+        elif window_start is not None:
+            start = max(window_start, status["as_of"])
+        else:
+            start = status["as_of"]
+        end = pd.Timestamp(now)
+        if start < end:
+            label = "Last close" if status["state"] == "closed" else "Last trade"
+            figure.add_trace(
+                go.Scatter(
+                    x=[start, end],
+                    y=[status["price"], status["price"]],
+                    name=f"{label} ${status['price']:,.2f}",
+                    mode="lines",
+                    # Drawn boldly: when it's the only price trace the axis
+                    # centres it, where it can sit on the sentiment zero line.
+                    line=dict(color=PRICE_COLOR, width=2.5, dash="dash"),
+                    opacity=0.9,
+                    hovertemplate=(
+                        f"{label} ${status['price']:,.2f} "
+                        f"({status['as_of']:%a %H:%M} UTC)<extra></extra>"
+                    ),
+                ),
+                secondary_y=False,
+            )
 
     # One bar trace per scoring model, so FinBERT-fallback hours are visibly
     # distinct (hatched) from LLM-scored hours.
@@ -286,10 +386,14 @@ def main() -> None:
 
     hours = None if window == 0 else window
 
+    now = datetime.now(timezone.utc)
+    window_start = pd.Timestamp(now) - pd.Timedelta(hours=hours) if hours else None
+
     try:
         aligned = load_aligned(ticker, hours)
         headlines = load_headlines(ticker)
         signals = load_signals(threshold)
+        status = price_status(load_latest_price(ticker), now)
     except FileNotFoundError:
         st.error(
             "The warehouse hasn't been created yet. Run the pipeline first "
@@ -324,7 +428,7 @@ def main() -> None:
         )
         st.info(f"Live sentiment scoring is paused.{since} Prices keep updating.")
 
-    if aligned.empty:
+    if aligned.empty and status is None:
         st.info(f"No data yet for {ticker}. Let the pipeline run a few cycles.")
         return
 
@@ -335,8 +439,6 @@ def main() -> None:
         float(scored["average_score"].iloc[-2]) if len(scored) >= 2 else None
     )
     article_total = int(aligned["article_count"].sum())
-    latest_close = aligned.dropna(subset=["close"])
-    latest_price = float(latest_close["close"].iloc[-1]) if not latest_close.empty else None
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric(
@@ -349,10 +451,21 @@ def main() -> None:
         ),
     )
     col2.metric("Articles in window", article_total)
+    # Always the most recent price (not limited to the chart window), with
+    # whether the market is trading right now.
     col3.metric(
         "Latest price",
-        f"${latest_price:,.2f}" if latest_price is not None else "—",
+        f"${status['price']:,.2f}" if status is not None else "—",
     )
+    if status is not None:
+        as_of = status["as_of"]
+        col3.caption(
+            {
+                "open": f"Market open · as of {as_of:%H:%M} UTC",
+                "closed": f"Market closed · last close {as_of:%a %H:%M} UTC",
+                "delayed": f"No trades since {as_of:%a %H:%M} UTC (holiday or delay)",
+            }[status["state"]]
+        )
     if not signals.empty:
         top = signals.iloc[0]
         col4.metric(
@@ -366,7 +479,8 @@ def main() -> None:
     # Main chart.
     st.subheader(f"{ticker} — sentiment vs. price")
     st.plotly_chart(
-        build_price_sentiment_chart(aligned, ticker), use_container_width=True
+        build_price_sentiment_chart(aligned, ticker, status, window_start, now),
+        use_container_width=True,
     )
 
     # Watchlist signals — compact table, natural width.

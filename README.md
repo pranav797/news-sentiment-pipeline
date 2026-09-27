@@ -372,6 +372,10 @@ curl "http://127.0.0.1:8000/aligned/AAPL?hours=48"
   bounding API cost and latency as the news table grows.
 - **Resilient cycles.** Each stage of a run is isolated; a failing feed or API
   call is logged and the cycle continues with the stages that can still run.
+- **Market-aware prices.** The dashboard checks the NYSE session (9:30–16:00 ET,
+  weekdays, DST-aware). Outside it, the latest price is labelled with its closing
+  time and a dashed last-close line spans the closed period, so weekends and
+  overnight read as "no trading" rather than missing data.
 - **Read-only concurrency.** The API and dashboard open the warehouse read-only,
   so they coexist with the scheduler and degrade gracefully (503 / a friendly
   message) if the store is briefly locked or not yet initialized.
