@@ -25,6 +25,7 @@ if str(SRC_DIR) not in sys.path:
 
 from config import ENABLE_FINBERT, WATCHLIST  # noqa: E402
 from db import get_readonly_connection  # noqa: E402
+from llm_switch import is_llm_enabled  # noqa: E402
 
 POSITIVE_COLOR = "#16a34a"
 NEGATIVE_COLOR = "#dc2626"
@@ -100,6 +101,14 @@ def load_headlines(ticker: str, limit: int = 20) -> pd.DataFrame:
         LIMIT ?
     """
     return _df(sql, [ticker, limit])
+
+
+@st.cache_data(ttl=60)
+def load_last_scored() -> object:
+    """Timestamp of the most recent LLM-scored headline (None if none yet)."""
+    return _df("SELECT max(scored_at) AS last_scored FROM sentiment", [])[
+        "last_scored"
+    ].iloc[0]
 
 
 @st.cache_data(ttl=300)
@@ -271,6 +280,23 @@ def main() -> None:
         logger.warning("Warehouse unavailable", exc_info=True)
         st.warning("Data is temporarily unavailable. Please refresh in a moment.")
         return
+
+    # Be upfront when live LLM scoring is paused, so stale sentiment isn't
+    # mistaken for current sentiment. Prices keep updating either way.
+    if is_llm_enabled():
+        st.success("Live: new headlines are scored for sentiment as they arrive.")
+    else:
+        try:
+            last_scored = load_last_scored()
+        except Exception:
+            last_scored = None
+        since = (
+            f" Sentiment reflects headlines scored up to "
+            f"{pd.Timestamp(last_scored):%Y-%m-%d %H:%M} UTC."
+            if last_scored is not None and not pd.isna(last_scored)
+            else ""
+        )
+        st.info(f"Live sentiment scoring is paused.{since} Prices keep updating.")
 
     if aligned.empty:
         st.info(f"No data yet for {ticker}. Let the pipeline run a few cycles.")

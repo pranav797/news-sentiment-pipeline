@@ -30,6 +30,8 @@ services:
     environment:
       MAX_HEADLINES_PER_RUN: ${MAX_HEADLINES_PER_RUN:-200}
       ENABLE_FINBERT: ${ENABLE_FINBERT:-true}
+      # LLM (OpenAI) scoring stays off until you run `./llm.sh on`.
+      LLM_SCORING_DEFAULT: "off"
     volumes:
       - warehouse:/app/data
       - hf-cache:/home/app/.cache/huggingface
@@ -80,6 +82,7 @@ services:
       - --server.port=8501
     environment:
       ENABLE_FINBERT: ${ENABLE_FINBERT:-true}
+      LLM_SCORING_DEFAULT: "off"  # must match the worker, for the status banner
     volumes:
       - warehouse:/app/data:ro
     read_only: true
