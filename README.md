@@ -103,7 +103,7 @@ the writer and each other.
 | Price data     | `yfinance`                                |
 | Sentiment      | OpenAI `gpt-4o-mini` (structured JSON) + FinBERT (`transformers`) |
 | Storage        | DuckDB (embedded, SQL, time-series)       |
-| Scheduling     | APScheduler (in-process)                  |
+| Scheduling     | APScheduler (in-process) or Prefect (orchestration) |
 | API            | FastAPI + Uvicorn                         |
 | Dashboard      | Streamlit + Plotly (dual-axis overlay)    |
 | Data handling  | pandas                                    |
@@ -144,6 +144,8 @@ news-sentiment-pipeline/
 │   └── main.py             # FastAPI service
 ├── dashboard/
 │   └── app.py              # Streamlit dashboard
+├── flows/
+│   └── pipeline_flow.py    # Prefect orchestration of the pipeline
 ├── scheduler.py            # APScheduler entry point
 └── requirements.txt
 ```
@@ -199,6 +201,29 @@ Or run it continuously on a schedule (executes once immediately, then every
 ```bash
 python scheduler.py
 ```
+
+### Run with Prefect (orchestration)
+
+For retries, run history, and a scheduling UI, run the pipeline as a Prefect
+flow instead of the APScheduler loop. Run one flow immediately:
+
+```bash
+python flows/pipeline_flow.py --once
+```
+
+Or start the Prefect server (UI at `http://127.0.0.1:4200`) and serve the flow
+on a schedule:
+
+```bash
+prefect server start
+```
+
+```bash
+python flows/pipeline_flow.py
+```
+
+Each stage is a Prefect task; the network/API stages retry automatically, and
+the flow-run timeline in the UI shows every run's success, failure, and retries.
 
 ### Run the API
 
@@ -269,6 +294,19 @@ FinBERT rated *neutral*: the specialist is noticeably more conservative about
 calling news positive. Running two scorers side by side both hedges against
 either model's blind spots and makes that difference in behavior measurable
 rather than assumed.
+
+## Orchestration
+
+The pipeline ships with two schedulers. **APScheduler** (`scheduler.py`) is the
+lightweight default: an in-process loop with no extra infrastructure.
+**Prefect** (`flows/pipeline_flow.py`) is the orchestration upgrade — each stage
+becomes a task with automatic retries on the network/API steps, and every run
+is recorded with its state, logs, and retry history in the Prefect UI. The
+pipeline logic is unchanged; the tasks call the same functions in `src/`.
+
+This is orchestration for a single-node, in-process pipeline: the win is
+reliability and observability (retries, run history, a scheduling UI), not
+distributed execution or horizontal scale.
 
 ## Limitations
 
