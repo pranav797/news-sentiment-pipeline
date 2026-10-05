@@ -7,6 +7,7 @@ or not the API process is up. Launch with:
 """
 
 import logging
+import os
 import sys
 import threading
 import time
@@ -14,6 +15,7 @@ from datetime import datetime, timezone
 from datetime import time as dtime
 from pathlib import Path
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -26,7 +28,26 @@ SRC_DIR = Path(__file__).resolve().parent.parent / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from config import ENABLE_FINBERT, PRICE_INTERVAL, WATCHLIST  # noqa: E402
+
+def _setting(name: str) -> str | None:
+    """Environment variable first, then Streamlit secrets (Community Cloud)."""
+    if os.environ.get(name):
+        return os.environ[name]
+    try:
+        return st.secrets.get(name)
+    except Exception:  # no secrets file, e.g. local runs
+        return None
+
+
+# Hosted mode (Streamlit Community Cloud): the pipeline runs in GitHub Actions
+# and publishes the warehouse to the repo's `data` branch; this app downloads
+# it. Unset locally, where the dashboard reads the local data/ directory.
+WAREHOUSE_REPO = _setting("WAREHOUSE_REPO")  # e.g. "owner/repo"
+if WAREHOUSE_REPO:
+    # If the switch file can't be fetched, never claim LLM scoring is live.
+    os.environ.setdefault("LLM_SCORING_DEFAULT", "off")
+
+from config import DATA_DIR, ENABLE_FINBERT, PRICE_INTERVAL, WATCHLIST  # noqa: E402
 from db import get_readonly_connection  # noqa: E402
 from llm_switch import is_llm_enabled  # noqa: E402
 
@@ -67,6 +88,26 @@ def _safe_link(url: object) -> object:
 
 
 # --- Data access -------------------------------------------------------------
+@st.cache_data(ttl=600, show_spinner=False)
+def sync_warehouse() -> None:
+    """Hosted mode: download the latest published warehouse, at most every 10
+    minutes. On failure the last good copy is kept."""
+    token = _setting("GITHUB_TOKEN")  # read-only token, needed only while private
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    for name in ("warehouse.duckdb", "llm_scoring.json"):
+        url = f"https://raw.githubusercontent.com/{WAREHOUSE_REPO}/data/{name}"
+        try:
+            with urlopen(Request(url, headers=headers), timeout=30) as response:
+                body = response.read()
+        except OSError:  # URLError/HTTPError
+            logger.warning("Could not download %s", name, exc_info=True)
+            continue
+        tmp = DATA_DIR / f"{name}.download"
+        tmp.write_bytes(body)
+        os.replace(tmp, DATA_DIR / name)  # atomic: readers never see a partial file
+
+
 def _df(sql: str, params: list) -> pd.DataFrame:
     """Run a read-only query and return the result as a DataFrame."""
     connection = get_readonly_connection()
@@ -348,6 +389,8 @@ def build_price_sentiment_chart(
 # --- UI ----------------------------------------------------------------------
 def main() -> None:
     st.set_page_config(page_title="News Sentiment Pipeline", layout="wide")
+    if WAREHOUSE_REPO:
+        sync_warehouse()
     st.title("Financial News Sentiment vs. Price")
     st.caption(
         "Near-real-time headline sentiment aligned with intraday prices. "
