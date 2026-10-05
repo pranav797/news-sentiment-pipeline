@@ -144,8 +144,11 @@ news-sentiment-pipeline/
 │   └── pipeline.py         # one full run_once() cycle
 ├── api/
 │   └── main.py             # FastAPI service
+├── .github/workflows/
+│   └── pipeline.yml        # scheduled pipeline on GitHub Actions
 ├── dashboard/
-│   └── app.py              # Streamlit dashboard
+│   ├── app.py              # Streamlit dashboard
+│   └── requirements.txt    # lean dependencies for Streamlit Cloud
 ├── flows/
 │   └── pipeline_flow.py    # Prefect orchestration of the pipeline
 ├── .streamlit/config.toml  # dashboard server hardening
@@ -257,7 +260,44 @@ as the scheduler.
 
 ## Deployment
 
-The repository ships a single-host deployment: one Docker image, run as four
+Two options: free hosting on GitHub Actions + Streamlit Community Cloud (no
+server to run), or self-hosting the full stack with Docker.
+
+### Free hosting: GitHub Actions + Streamlit Community Cloud
+
+- **Pipeline:** `.github/workflows/pipeline.yml` runs every 30 minutes on GitHub
+  Actions and publishes the warehouse to the repository's `data` branch.
+- **Dashboard:** Streamlit Community Cloud runs `dashboard/app.py`, which
+  downloads the latest published warehouse every 10 minutes.
+
+Setup:
+
+1. Add the OpenAI key as a repository secret named `OPENAI_API_KEY`
+   (Settings → Secrets and variables → Actions). Only the workflow can read it.
+2. On [share.streamlit.io](https://share.streamlit.io), create an app from this
+   repository with main file `dashboard/app.py` and Python 3.13. In the app's
+   Secrets, set `WAREHOUSE_REPO = "<owner>/<repo>"` (for a private repository,
+   also `GITHUB_TOKEN` with read-only access to its contents).
+
+LLM scoring is off by default. To turn it on, run the workflow manually
+(Actions → Pipeline → Run workflow) with `llm: on` and a number of hours, or:
+
+```bash
+gh workflow run pipeline.yml -f llm=on -f hours=4
+gh workflow run pipeline.yml -f llm=off
+```
+
+Only collaborators with write access can run it, and the run scores new
+headlines immediately; scoring switches off automatically when the hours expire.
+The hosted setup does not run the FastAPI service (run it locally or self-host).
+Streamlit Community Cloud apps sleep after 12 hours without visitors and wake on
+the next visit; the pipeline keeps running regardless. GitHub disables scheduled
+workflows in public repositories after 60 days without activity; re-enable it
+from the Actions tab if that happens.
+
+### Self-hosting with Docker
+
+The repository also ships a single-host deployment: one Docker image, run as four
 services by `docker-compose.yml`.
 
 | Service     | Role                                              | Reachable from       |
