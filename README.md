@@ -8,6 +8,9 @@ interactive dashboard.
 It answers a simple question for a watchlist of tickers: **what is the mood
 around each name right now, and where is it shifting sharply?**
 
+**Live dashboard:** [news-sentiment-pipeline.streamlit.app](https://news-sentiment-pipeline-ciimybpm3cgvtknu3nw5ey.streamlit.app/)
+(if it has been idle, click the button to wake it; it starts in under a minute)
+
 ---
 
 ## Problem
