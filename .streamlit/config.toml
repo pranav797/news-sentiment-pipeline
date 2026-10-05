@@ -20,3 +20,30 @@ toolbarMode = "viewer"
 
 [browser]
 gatherUsageStats = false
+
+# "Midnight Aurora": deep navy, electric cyan accents, mint/rose for sentiment.
+[theme]
+base = "dark"
+primaryColor = "#22D3EE"
+backgroundColor = "#0A0E1A"
+secondaryBackgroundColor = "#121A2E"
+textColor = "#E2E8F0"
+greenColor = "#34D399"
+redColor = "#FB7185"
+blueColor = "#22D3EE"
+violetColor = "#A78BFA"
+orangeColor = "#FBBF24"
+linkColor = "#67E8F9"
+borderColor = "#1E2A45"
+dataframeBorderColor = "#1E2A45"
+dataframeHeaderBackgroundColor = "#16203A"
+showWidgetBorder = true
+baseRadius = "0.75rem"
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap"
+headingFont = "Space Grotesk:https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&display=swap"
+codeFont = "JetBrains Mono:https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
+chartCategoricalColors = ["#22D3EE", "#A78BFA", "#34D399", "#FB7185", "#FBBF24"]
+
+[theme.sidebar]
+backgroundColor = "#0D1324"
+secondaryBackgroundColor = "#16203A"

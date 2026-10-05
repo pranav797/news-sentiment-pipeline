@@ -26,16 +26,61 @@ DATA_DIR = PROJECT_ROOT / "data"
 DB_PATH = DATA_DIR / "warehouse.duckdb"
 
 # --- Watchlist ---------------------------------------------------------------
-# Start narrow: a few big names with plenty of news coverage. Finish these
-# end-to-end before widening the list.
-WATCHLIST = [
-    "AAPL",   # Apple
-    "MSFT",   # Microsoft
-    "NVDA",   # NVIDIA
-    "AMZN",   # Amazon
-    "TSLA",   # Tesla
-    "JPM",    # JPMorgan Chase
-]
+# Large caps with heavy news coverage, grouped by sector: ticker -> (name, sector).
+# Iterating the dict yields tickers, so pipeline code treats it as a list.
+WATCHLIST: dict[str, tuple[str, str]] = {
+    # Technology
+    "AAPL": ("Apple", "Technology"),
+    "MSFT": ("Microsoft", "Technology"),
+    "NVDA": ("NVIDIA", "Technology"),
+    "AVGO": ("Broadcom", "Technology"),
+    "ORCL": ("Oracle", "Technology"),
+    "CRM": ("Salesforce", "Technology"),
+    "AMD": ("AMD", "Technology"),
+    "ADBE": ("Adobe", "Technology"),
+    "INTC": ("Intel", "Technology"),
+    # Communication
+    "GOOGL": ("Alphabet", "Communication"),
+    "META": ("Meta", "Communication"),
+    "NFLX": ("Netflix", "Communication"),
+    "DIS": ("Disney", "Communication"),
+    "T": ("AT&T", "Communication"),
+    "VZ": ("Verizon", "Communication"),
+    # Consumer
+    "AMZN": ("Amazon", "Consumer"),
+    "TSLA": ("Tesla", "Consumer"),
+    "WMT": ("Walmart", "Consumer"),
+    "COST": ("Costco", "Consumer"),
+    "HD": ("Home Depot", "Consumer"),
+    "MCD": ("McDonald's", "Consumer"),
+    "NKE": ("Nike", "Consumer"),
+    "SBUX": ("Starbucks", "Consumer"),
+    "KO": ("Coca-Cola", "Consumer"),
+    "PEP": ("PepsiCo", "Consumer"),
+    # Financials
+    "JPM": ("JPMorgan Chase", "Financials"),
+    "BAC": ("Bank of America", "Financials"),
+    "GS": ("Goldman Sachs", "Financials"),
+    "MS": ("Morgan Stanley", "Financials"),
+    "WFC": ("Wells Fargo", "Financials"),
+    "V": ("Visa", "Financials"),
+    "MA": ("Mastercard", "Financials"),
+    # Healthcare
+    "UNH": ("UnitedHealth", "Healthcare"),
+    "JNJ": ("Johnson & Johnson", "Healthcare"),
+    "LLY": ("Eli Lilly", "Healthcare"),
+    "PFE": ("Pfizer", "Healthcare"),
+    "MRK": ("Merck", "Healthcare"),
+    "ABBV": ("AbbVie", "Healthcare"),
+    # Energy
+    "XOM": ("ExxonMobil", "Energy"),
+    "CVX": ("Chevron", "Energy"),
+    # Industrials
+    "BA": ("Boeing", "Industrials"),
+    "CAT": ("Caterpillar", "Industrials"),
+    "GE": ("GE Aerospace", "Industrials"),
+    "UPS": ("UPS", "Industrials"),
+}
 
 # --- News feeds --------------------------------------------------------------
 # Yahoo Finance publishes a per-ticker RSS feed (no API key required). This is

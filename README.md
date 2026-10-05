@@ -49,7 +49,9 @@ as a **monitoring and early-warning tool** — not a trading system.
   aggregate loop on an interval, with per-stage error isolation so one failing
   source never takes down a cycle.
 - **Serves the data** through a FastAPI service and a Streamlit + Plotly
-  dashboard that overlays sentiment on price and highlights sharp movers.
+  dashboard covering 44 large caps across 7 sectors: sentiment overlaid on
+  price, a sector-by-ticker market-mood map, sharp movers, and the latest
+  scored headlines.
 
 ---
 

@@ -51,9 +51,10 @@ from config import DATA_DIR, ENABLE_FINBERT, PRICE_INTERVAL, WATCHLIST  # noqa: 
 from db import get_readonly_connection  # noqa: E402
 from llm_switch import is_llm_enabled  # noqa: E402
 
-POSITIVE_COLOR = "#16a34a"
-NEGATIVE_COLOR = "#dc2626"
-PRICE_COLOR = "#2563eb"
+# "Midnight Aurora" palette, matching .streamlit/config.toml.
+POSITIVE_COLOR = "#34D399"
+NEGATIVE_COLOR = "#FB7185"
+PRICE_COLOR = "#22D3EE"
 
 logger = logging.getLogger(__name__)
 
@@ -260,6 +261,29 @@ def load_signals(threshold: float = 0.3) -> pd.DataFrame:
     return _df(sql, [threshold])
 
 
+@st.cache_data(ttl=300)
+def load_mood(hours: int | None) -> pd.DataFrame:
+    """Per-ticker sentiment over the window for the market-mood map. Like the
+    hourly buckets, a ticker's average uses a single model (the LLM if it scored
+    any of its headlines in the window, else FinBERT), never a blend."""
+    sql = """
+        WITH w AS (
+            SELECT ticker, score, scorer FROM headline_sentiment
+            WHERE published_at >= now() - INTERVAL (?) HOUR
+        ),
+        pick AS (
+            SELECT ticker, COUNT(*) AS articles,
+                   CASE WHEN bool_or(scorer = 'llm') THEN 'llm' ELSE 'finbert' END AS scorer
+            FROM w GROUP BY ticker
+        )
+        SELECT w.ticker, AVG(w.score) AS avg_score, p.articles, p.scorer
+        FROM w JOIN pick p ON p.ticker = w.ticker AND p.scorer = w.scorer
+        GROUP BY w.ticker, p.articles, p.scorer
+    """
+    mood = _df(sql, [hours if hours is not None else 24 * 365 * 50])
+    return mood[mood["ticker"].isin(WATCHLIST)]
+
+
 # --- Chart -------------------------------------------------------------------
 def build_price_sentiment_chart(
     frame: pd.DataFrame,
@@ -278,6 +302,19 @@ def build_price_sentiment_chart(
 
     prices = frame.dropna(subset=["close"])
     if not prices.empty:
+        figure.add_trace(  # soft glow beneath the price line
+            go.Scatter(
+                x=prices["time_bucket"],
+                y=prices["close"],
+                mode="lines",
+                line=dict(color=PRICE_COLOR, width=9),
+                opacity=0.12,
+                hoverinfo="skip",
+                showlegend=False,
+                connectgaps=True,
+            ),
+            secondary_y=False,
+        )
         figure.add_trace(
             go.Scatter(
                 x=prices["time_bucket"],
@@ -323,8 +360,8 @@ def build_price_sentiment_chart(
     # distinct (hatched) from LLM-scored hours.
     sentiment = frame.dropna(subset=["average_score"])
     for scorer, model, label, pattern in [
-        ("llm", "LLM", "Avg sentiment (LLM)", ""),
-        ("finbert", "FinBERT", "Avg sentiment (FinBERT fallback)", "/"),
+        ("llm", "LLM", "Sentiment (LLM)", ""),
+        ("finbert", "FinBERT", "Sentiment (FinBERT)", "/"),
     ]:
         bars = sentiment[sentiment["scorer"] == scorer]
         if bars.empty:
@@ -351,7 +388,7 @@ def build_price_sentiment_chart(
         height=460,
         margin=dict(l=10, r=10, t=48, b=10),
         legend=dict(
-            orientation="h", yanchor="bottom", y=1.04, xanchor="right", x=1
+            orientation="h", yanchor="bottom", y=1.04, xanchor="left", x=0
         ),
         hovermode="x unified",
         # Each hour belongs to exactly one model's trace, so overlay keeps
@@ -386,48 +423,172 @@ def build_price_sentiment_chart(
     return figure
 
 
+def build_mood_map(mood: pd.DataFrame) -> go.Figure:
+    """Sector -> ticker treemap: tile size = article count, color = sentiment.
+
+    Built node by node so every tile (including sector and root tiles, whose
+    sentiment is the article-weighted mean of their children) has a label.
+    """
+    data = mood.assign(
+        sector=mood["ticker"].map(lambda t: WATCHLIST[t][1]),
+        name=mood["ticker"].map(lambda t: WATCHLIST[t][0]),
+        weighted=mood["avg_score"] * mood["articles"],
+    )
+    sectors = data.groupby("sector").agg(articles=("articles", "sum"), weighted=("weighted", "sum"))
+    root = "Watchlist"
+    ids = [root, *sectors.index, *data["ticker"]]
+    parents = ["", *[root] * len(sectors), *data["sector"]]
+    values = [int(data["articles"].sum()), *sectors["articles"], *data["articles"]]
+    scores = [
+        data["weighted"].sum() / data["articles"].sum(),
+        *(sectors["weighted"] / sectors["articles"]),
+        *data["avg_score"],
+    ]
+    names = [root, *sectors.index, *data["name"]]
+
+    figure = go.Figure(
+        go.Treemap(
+            ids=ids,
+            labels=ids,
+            parents=parents,
+            values=values,
+            branchvalues="total",
+            text=[f"{score:+.2f}" for score in scores],
+            customdata=names,
+            texttemplate="<b>%{label}</b><br>%{text}",
+            hovertemplate=(
+                "<b>%{label}</b> · %{customdata}<br>sentiment %{text}"
+                "<br>%{value} articles<extra></extra>"
+            ),
+            marker=dict(
+                colors=scores,
+                colorscale=[(0, NEGATIVE_COLOR), (0.5, "#334155"), (1, POSITIVE_COLOR)],
+                cmin=-1,
+                cmax=1,
+                cornerradius=6,
+                line=dict(color="#0A0E1A", width=2),
+                colorbar=dict(title="Sentiment", tickvals=[-1, -0.5, 0, 0.5, 1], thickness=12),
+            ),
+            root_color="rgba(0,0,0,0)",
+        )
+    )
+    figure.update_layout(
+        height=460, margin=dict(l=0, r=0, t=10, b=0), paper_bgcolor="rgba(0,0,0,0)"
+    )
+    return figure
+
+
 # --- UI ----------------------------------------------------------------------
+# Static styling for the header only (our own markup, no user data).
+HERO_CSS = """
+<style>
+.hero {
+  padding: 1.4rem 1.6rem; margin-bottom: 0.6rem; border-radius: 1rem;
+  border: 1px solid #1E2A45;
+  background:
+    radial-gradient(120% 160% at 0% 0%, rgba(34,211,238,0.20) 0%,
+      rgba(167,139,250,0.12) 40%, rgba(10,14,26,0) 72%),
+    #0F1628;
+}
+.hero-title {
+  font-family: "Space Grotesk", sans-serif; font-weight: 700;
+  font-size: 2.2rem; line-height: 1.15;
+  background: linear-gradient(90deg, #67E8F9 0%, #A78BFA 55%, #F0ABFC 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.hero-sub { color: #94A3B8; margin-top: 0.4rem; font-size: 0.95rem; }
+</style>
+"""
+
+WINDOWS = {"24h": 24, "48h": 48, "72h": 72, "1W": 168, "All": None}
+SCORER_NAMES = {"llm": "LLM", "finbert": "FinBERT"}
+
+
+def _ticker_label(ticker: str) -> str:
+    return f"{ticker} · {WATCHLIST.get(ticker, (ticker, ''))[0]}"
+
+
+def render_header(status: dict | None) -> None:
+    st.markdown(
+        HERO_CSS
+        + '<div class="hero"><div class="hero-title">Market Sentiment Radar</div>'
+        + f'<div class="hero-sub">Near-real-time news sentiment for {len(WATCHLIST)} '
+        + "large caps, aligned with intraday prices · All times UTC</div></div>",
+        unsafe_allow_html=True,
+    )
+    # Which model produces live sentiment, so FinBERT-fallback or stale scores
+    # are never mistaken for live LLM scores.
+    if is_llm_enabled():
+        badges = [":green-badge[:material/bolt: LLM scoring live]"]
+    elif ENABLE_FINBERT:
+        badges = [":orange-badge[:material/pause_circle: LLM paused · FinBERT scores new headlines]"]
+    else:
+        try:
+            last = load_last_scored()
+        except Exception:
+            last = None
+        since = (
+            f" · last scored {pd.Timestamp(last):%b %d %H:%M}"
+            if last is not None and not pd.isna(last)
+            else ""
+        )
+        badges = [f":gray-badge[:material/pause_circle: Sentiment scoring paused{since}]"]
+    if status is not None:
+        badges.append(
+            {
+                "open": ":green-badge[:material/show_chart: Market open]",
+                "closed": ":gray-badge[:material/bedtime: Market closed]",
+                "delayed": ":orange-badge[:material/schedule: No recent trades]",
+            }[status["state"]]
+        )
+    badges.append(":blue-badge[:material/update: Pipeline runs every 30 min]")
+    st.markdown(" ".join(badges))
+
+
 def main() -> None:
-    st.set_page_config(page_title="News Sentiment Pipeline", layout="wide")
+    st.set_page_config(
+        page_title="Market Sentiment Radar", page_icon=":material/radar:", layout="wide"
+    )
     if WAREHOUSE_REPO:
         sync_warehouse()
-    st.title("Financial News Sentiment vs. Price")
-    st.caption(
-        "Near-real-time headline sentiment aligned with intraday prices. "
-        "All times UTC."
-    )
 
     with st.sidebar:
-        st.header("Controls")
-        ticker = st.selectbox("Ticker", sorted({t.upper() for t in WATCHLIST}))
-        window = st.selectbox(
-            "Window",
-            options=[24, 48, 72, 168, 0],
-            index=1,
-            format_func=lambda h: "All" if h == 0 else f"Last {h}h",
+        st.markdown("### :material/radar: Sentiment Radar")
+        sectors = sorted({sector for _, sector in WATCHLIST.values()})
+        sector = st.pills("Sector", sectors, selection_mode="single")
+        tickers = sorted(t for t, (_, s) in WATCHLIST.items() if sector in (None, s))
+        ticker = st.selectbox(
+            "Ticker",
+            tickers,
+            index=tickers.index("AAPL") if "AAPL" in tickers else 0,
+            format_func=_ticker_label,
         )
-        threshold = st.slider("Signal threshold", 0.0, 2.0, 0.3, 0.1)
+        window_label = st.segmented_control("Window", list(WINDOWS), default="48h") or "48h"
+        hours = WINDOWS[window_label]
+        threshold = st.slider(
+            "Mover threshold", 0.0, 2.0, 0.3, 0.1,
+            help="Minimum hour-over-hour change in sentiment to count as a sharp move.",
+        )
         # Per-visitor view setting only. Whether FinBERT runs at all is a
-        # server-side deployment setting (ENABLE_FINBERT), never changeable by
-        # public visitors.
+        # server-side setting (ENABLE_FINBERT) that visitors can never change.
         show_comparison = st.toggle(
-            "LLM vs. FinBERT comparison",
+            "Show model comparison",
             value=ENABLE_FINBERT,
             disabled=not ENABLE_FINBERT,
             help=(
-                "Show how the general LLM and the finance-tuned FinBERT model "
-                "score the same headlines."
+                "Show a tab comparing how the general LLM and the finance-tuned "
+                "FinBERT model scored the same headlines. This only changes your "
+                "view; it does not turn LLM scoring on or off."
                 if ENABLE_FINBERT
                 else "FinBERT scoring is turned off on this deployment to save memory."
             ),
         )
-        if st.button("Refresh data"):
+        if st.button("Refresh data", icon=":material/refresh:", use_container_width=True):
             if _try_refresh():
                 st.rerun()
             else:
                 st.caption("Data was refreshed moments ago — try again shortly.")
-
-    hours = None if window == 0 else window
+        st.caption("Headlines: Yahoo Finance · Prices: yfinance · Sentiment: GPT-4o-mini + FinBERT")
 
     now = datetime.now(timezone.utc)
     window_start = pd.Timestamp(now) - pd.Timedelta(hours=hours) if hours else None
@@ -436,8 +597,10 @@ def main() -> None:
         aligned = load_aligned(ticker, hours)
         headlines = load_headlines(ticker)
         signals = load_signals(threshold)
+        mood = load_mood(hours)
         status = price_status(load_latest_price(ticker), now)
     except FileNotFoundError:
+        render_header(None)
         st.error(
             "The warehouse hasn't been created yet. Run the pipeline first "
             "(`python scheduler.py` or a manual run), then refresh."
@@ -446,177 +609,167 @@ def main() -> None:
     except Exception:  # e.g. warehouse briefly locked by a writer
         # Log internally; don't show error text (file paths etc.) to visitors.
         logger.warning("Warehouse unavailable", exc_info=True)
+        render_header(None)
         st.warning("Data is temporarily unavailable. Please refresh in a moment.")
         return
 
-    # Say which model is producing live sentiment, so FinBERT-fallback or
-    # stale scores are never mistaken for live LLM scores.
-    if is_llm_enabled():
-        st.success("Live: new headlines are scored by the LLM as they arrive.")
-    elif ENABLE_FINBERT:
-        st.info(
-            "LLM scoring is paused, so new headlines are scored by FinBERT "
-            "(hatched bars) until it's back on."
-        )
-    else:
-        try:
-            last_scored = load_last_scored()
-        except Exception:
-            last_scored = None
-        since = (
-            f" Sentiment reflects headlines scored up to "
-            f"{pd.Timestamp(last_scored):%Y-%m-%d %H:%M} UTC."
-            if last_scored is not None and not pd.isna(last_scored)
-            else ""
-        )
-        st.info(f"Live sentiment scoring is paused.{since} Prices keep updating.")
+    render_header(status)
 
-    if aligned.empty and status is None:
-        st.info(f"No data yet for {ticker}. Let the pipeline run a few cycles.")
-        return
-
-    # Summary metrics for the selected ticker.
+    # Summary cards for the selected ticker.
     scored = aligned.dropna(subset=["average_score"])
     latest_sentiment = float(scored["average_score"].iloc[-1]) if not scored.empty else None
-    prev_sentiment = (
-        float(scored["average_score"].iloc[-2]) if len(scored) >= 2 else None
-    )
-    article_total = int(aligned["article_count"].sum())
+    prev_sentiment = float(scored["average_score"].iloc[-2]) if len(scored) >= 2 else None
+    returns = aligned["hourly_return"].dropna()
 
+    st.markdown(f"#### {_ticker_label(ticker)}")
     col1, col2, col3, col4 = st.columns(4)
     col1.metric(
-        "Latest avg sentiment",
+        "Sentiment · latest hour",
         f"{latest_sentiment:+.2f}" if latest_sentiment is not None else "—",
         delta=(
             f"{latest_sentiment - prev_sentiment:+.2f}"
             if latest_sentiment is not None and prev_sentiment is not None
             else None
         ),
+        border=True,
     )
-    col2.metric("Articles in window", article_total)
-    # Always the most recent price (not limited to the chart window), with
-    # whether the market is trading right now.
-    col3.metric(
-        "Latest price",
-        f"${status['price']:,.2f}" if status is not None else "—",
-    )
+    col2.metric(f"Articles · {window_label}", int(aligned["article_count"].sum()), border=True)
+    # Always the most recent price (not limited to the chart window).
     if status is not None:
         as_of = status["as_of"]
-        col3.caption(
-            {
-                "open": f"Market open · as of {as_of:%H:%M} UTC",
-                "closed": f"Market closed · last close {as_of:%a %H:%M} UTC",
-                "delayed": f"No trades since {as_of:%a %H:%M} UTC (holiday or delay)",
-            }[status["state"]]
+        price_label = {
+            "open": f"Price · {as_of:%H:%M} UTC",
+            "closed": f"Last close · {as_of:%a %H:%M} UTC",
+            "delayed": f"Last trade · {as_of:%a %H:%M} UTC",
+        }[status["state"]]
+        col3.metric(
+            price_label,
+            f"${status['price']:,.2f}",
+            delta=f"{returns.iloc[-1]:+.2%} last hour" if not returns.empty else None,
+            border=True,
         )
+    else:
+        col3.metric("Price", "—", border=True)
     if not signals.empty:
         top = signals.iloc[0]
         col4.metric(
-            "Biggest mover (watchlist)",
-            top["ticker"],
-            delta=f"{top['delta']:+.2f}",
+            "Biggest mover · watchlist", top["ticker"], delta=f"{top['delta']:+.2f}", border=True
         )
     else:
-        col4.metric("Biggest mover (watchlist)", "—")
+        col4.metric("Biggest mover · watchlist", "—", border=True)
 
-    # Main chart.
-    st.subheader(f"{ticker} — sentiment vs. price")
-    st.plotly_chart(
-        build_price_sentiment_chart(aligned, ticker, status, window_start, now),
-        use_container_width=True,
-    )
+    labels = [
+        f":material/show_chart: {ticker} chart",
+        ":material/grid_view: Market mood",
+        ":material/newspaper: Headlines",
+    ]
+    if show_comparison:
+        labels.append(":material/psychology: Model comparison")
+    tabs = st.tabs(labels)
 
-    # Watchlist signals — compact table, natural width.
-    st.subheader("Sentiment movers")
-    st.caption(f"Change vs. prior hour ≥ {threshold:.1f}")
-    if signals.empty:
-        st.write("No sharp moves in the latest window.")
-    else:
-        st.dataframe(
-            signals.rename(
-                columns={
-                    "ticker": "Ticker",
-                    "average_score": "Now",
-                    "previous_score": "Prev",
-                    "delta": "Δ",
-                }
-            ),
-            hide_index=True,
-            use_container_width=False,
-            column_config={
-                "Now": st.column_config.NumberColumn(format="%.2f"),
-                "Prev": st.column_config.NumberColumn(format="%.2f"),
-                "Δ": st.column_config.NumberColumn(format="%+.2f"),
-            },
-        )
+    with tabs[0]:
+        if aligned.empty and status is None:
+            st.info(f"No data yet for {ticker}. New tickers fill in within about an hour.")
+        else:
+            st.plotly_chart(
+                build_price_sentiment_chart(aligned, ticker, status, window_start, now),
+                use_container_width=True,
+            )
+            st.caption(
+                "Bars: average headline sentiment per hour (hatched = scored by FinBERT "
+                "while LLM scoring is paused). Line: price."
+            )
 
-    # Latest headlines — full page width, source dropped to reduce clutter.
-    st.subheader(f"Latest {ticker} headlines")
-    if headlines.empty:
-        st.write("No scored headlines yet.")
-    else:
-        display = headlines.drop(columns=["source"])
-        display["scorer"] = display["scorer"].map({"llm": "LLM", "finbert": "FinBERT"})
-        display["url"] = display["url"].map(_safe_link)
-        st.dataframe(
-            display,
-            hide_index=True,
-            use_container_width=True,
-            column_config={
-                "published_at": st.column_config.DatetimeColumn(
-                    "Published (UTC)", format="YYYY-MM-DD HH:mm", width="small"
-                ),
-                "title": st.column_config.TextColumn("Headline", width="large"),
-                "sentiment": st.column_config.TextColumn("Label", width="small"),
-                "score": st.column_config.NumberColumn("Score", format="%+.2f", width="small"),
-                "topic": st.column_config.TextColumn("Topic", width="medium"),
-                "scorer": st.column_config.TextColumn("Scored by", width="small"),
-                "url": st.column_config.LinkColumn(
-                    "Link", display_text="open", width="small"
-                ),
-            },
-        )
+    with tabs[1]:
+        left, right = st.columns([3, 2], gap="large")
+        with left:
+            if mood.empty:
+                st.info("No headlines in this window yet.")
+            else:
+                st.plotly_chart(build_mood_map(mood), use_container_width=True)
+                st.caption(f"Tile size: articles · color: average sentiment over {window_label}")
+        with right:
+            st.markdown("##### Sentiment movers")
+            st.caption(f"Hour-over-hour change ≥ {threshold:.1f}")
+            if signals.empty:
+                st.write("No sharp moves right now.")
+            else:
+                st.dataframe(
+                    signals.assign(name=signals["ticker"].map(lambda t: WATCHLIST.get(t, (t,))[0]))[
+                        ["ticker", "name", "average_score", "previous_score", "delta"]
+                    ],
+                    hide_index=True,
+                    use_container_width=True,
+                    column_config={
+                        "ticker": "Ticker",
+                        "name": "Company",
+                        "average_score": st.column_config.NumberColumn("Now", format="%+.2f"),
+                        "previous_score": st.column_config.NumberColumn("Prev", format="%+.2f"),
+                        "delta": st.column_config.NumberColumn("Δ", format="%+.2f"),
+                    },
+                )
+
+    with tabs[2]:
+        if headlines.empty:
+            st.write("No scored headlines yet.")
+        else:
+            display = headlines.drop(columns=["source"])
+            display["scorer"] = display["scorer"].map(SCORER_NAMES)
+            display["url"] = display["url"].map(_safe_link)
+            st.dataframe(
+                display,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "published_at": st.column_config.DatetimeColumn(
+                        "Published (UTC)", format="YYYY-MM-DD HH:mm", width="small"
+                    ),
+                    "title": st.column_config.TextColumn("Headline", width="large"),
+                    "sentiment": st.column_config.TextColumn("Label", width="small"),
+                    "score": st.column_config.ProgressColumn(
+                        "Score", format="%+.2f", min_value=-1, max_value=1, width="small"
+                    ),
+                    "topic": st.column_config.TextColumn("Topic", width="medium"),
+                    "scorer": st.column_config.TextColumn("Scored by", width="small"),
+                    "url": st.column_config.LinkColumn("Link", display_text="open", width="small"),
+                },
+            )
 
     if not show_comparison:
         return
 
-    # Two-model comparison — LLM vs. FinBERT (Phase 8). Loaded resiliently so
-    # an older warehouse without the view doesn't blank the page.
-    try:
-        comparison = load_comparison(ticker)
-    except Exception:
-        comparison = pd.DataFrame()
-
-    st.subheader("Model comparison — LLM vs. FinBERT")
-    if comparison.empty:
-        st.write("No FinBERT scores yet. Run the pipeline to populate them.")
-    else:
+    with tabs[3]:
+        st.caption(
+            "Headlines scored by both models: the general LLM and the finance-tuned "
+            "FinBERT. This set only grows while LLM scoring is switched on."
+        )
+        # Loaded resiliently so an older warehouse without the view still renders.
+        try:
+            comparison = load_comparison(ticker)
+        except Exception:
+            comparison = pd.DataFrame()
+        if comparison.empty:
+            st.write("No headlines have been scored by both models yet.")
+            return
         agreement = float(comparison["labels_agree"].mean())
         disagreements = comparison[~comparison["labels_agree"]]
         mcol1, mcol2, mcol3 = st.columns(3)
-        mcol1.metric("Headlines compared", len(comparison))
-        mcol2.metric("Label agreement", f"{agreement:.0%}")
-        mcol3.metric("Disagreements", len(disagreements))
-
-        st.caption("Headlines where the two models assigned different labels")
+        mcol1.metric("Headlines compared", len(comparison), border=True)
+        mcol2.metric("Label agreement", f"{agreement:.0%}", border=True)
+        mcol3.metric("Disagreements", len(disagreements), border=True)
+        st.markdown("##### Where the models disagree")
         if disagreements.empty:
             st.write("The two models agree on every scored headline.")
         else:
             st.dataframe(
-                disagreements[
-                    ["title", "llm_label", "llm_score", "finbert_label", "finbert_score"]
-                ],
+                disagreements[["title", "llm_label", "llm_score", "finbert_label", "finbert_score"]],
                 hide_index=True,
                 use_container_width=True,
                 column_config={
                     "title": st.column_config.TextColumn("Headline", width="large"),
                     "llm_label": st.column_config.TextColumn("LLM", width="small"),
-                    "llm_score": st.column_config.NumberColumn(
-                        "LLM score", format="%+.2f", width="small"
-                    ),
-                    "finbert_label": st.column_config.TextColumn(
-                        "FinBERT", width="small"
-                    ),
+                    "llm_score": st.column_config.NumberColumn("LLM score", format="%+.2f", width="small"),
+                    "finbert_label": st.column_config.TextColumn("FinBERT", width="small"),
                     "finbert_score": st.column_config.NumberColumn(
                         "FinBERT score", format="%+.2f", width="small"
                     ),
