@@ -6,9 +6,9 @@ name: Pipeline
 # only people with write access to the repository can trigger it.
 on:
   schedule:
-    # ponytail: every 2h fits the 2,000 free Actions minutes/month of a private
-    # repo; once the repo is public (unlimited minutes) use "*/30 * * * *".
-    - cron: "17 */2 * * *"
+    # Every 30 minutes (a run takes ~2 min; public repos get unlimited minutes).
+    # If the repo goes private, use "17 */2 * * *" to fit 2,000 free min/month.
+    - cron: "7,37 * * * *"
   workflow_dispatch:
     inputs:
       llm:
