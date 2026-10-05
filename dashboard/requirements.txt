@@ -1,0 +1,8 @@
+# Lean dependencies for Streamlit Community Cloud, which uses this file (the
+# entrypoint's directory) over the root requirements.txt. No torch/Prefect:
+# the pipeline runs in GitHub Actions; this app only reads the warehouse.
+streamlit==1.64.0
+pandas==3.0.6
+plotly==7.1.0
+duckdb==1.5.5
+python-dotenv==1.2.3

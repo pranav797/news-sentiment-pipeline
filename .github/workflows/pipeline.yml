@@ -1,0 +1,78 @@
+name: Pipeline
+
+# Runs the full pipeline (news -> LLM/FinBERT sentiment -> prices -> aggregate)
+# and publishes the warehouse to the `data` branch, which the hosted dashboard
+# reads. Running it manually ("Run workflow") is also the owner-only LLM switch:
+# only people with write access to the repository can trigger it.
+on:
+  schedule:
+    # ponytail: every 2h fits the 2,000 free Actions minutes/month of a private
+    # repo; once the repo is public (unlimited minutes) use "*/30 * * * *".
+    - cron: "17 */2 * * *"
+  workflow_dispatch:
+    inputs:
+      llm:
+        description: LLM (OpenAI) scoring
+        type: choice
+        options: [unchanged, "on", "off"]
+        default: unchanged
+      hours:
+        description: Hours to keep LLM scoring on (when turning it on)
+        default: "4"
+
+permissions:
+  contents: write # only to push the data branch
+
+concurrency:
+  group: pipeline
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out the published warehouse into ./data
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: data
+          path: data
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install dependencies (CPU-only torch)
+        run: |
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.14.0
+          pip install -r requirements.txt
+      - name: Cache the pinned FinBERT model
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/huggingface
+          key: finbert-4556d13015211d73dccd3fdd39d39232506f3e43
+      - name: Set the LLM switch
+        if: github.event_name == 'workflow_dispatch' && inputs.llm != 'unchanged'
+        env: # passed via env, never interpolated into the script
+          LLM: ${{ inputs.llm }}
+          HOURS: ${{ inputs.hours }}
+        run: |
+          if [ "$LLM" = "on" ]; then python src/llm_switch.py on "$HOURS"; else python src/llm_switch.py off; fi
+      - name: Run the pipeline
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          LLM_SCORING_DEFAULT: "off"
+        run: |
+          [ -f data/llm_scoring.json ] || python src/llm_switch.py off
+          python src/pipeline.py
+      - name: Publish the warehouse to the data branch
+        working-directory: data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -q --orphan publish
+          git add -A
+          git commit -qm "Warehouse snapshot $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push -qf origin publish:data
