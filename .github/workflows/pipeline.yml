@@ -1,13 +1,13 @@
 name: Pipeline
 
 # Runs the full pipeline (news -> LLM/FinBERT sentiment -> prices -> aggregate)
-# and publishes the warehouse to the `data` branch, which the hosted dashboard
-# reads. Running it manually ("Run workflow") is also the owner-only LLM switch:
+# publishes the warehouse to the `data` branch, and rebuilds the static
+# dashboard on GitHub Pages from it. Running it manually ("Run workflow") is also the owner-only LLM switch:
 # only people with write access to the repository can trigger it.
 on:
   schedule:
-    # Every 30 minutes (a run takes ~2 min; public repos get unlimited minutes).
-    # If the repo goes private, use "17 */2 * * *" to fit 2,000 free min/month.
+    # Every 30 minutes (a run takes ~10 min; public repos get unlimited minutes).
+    # If the repo goes private, use "17 */4 * * *" to fit 2,000 free min/month.
     - cron: "7,37 * * * *"
   workflow_dispatch:
     inputs:
@@ -22,6 +22,8 @@ on:
 
 permissions:
   contents: write # only to push the data branch
+  pages: write # publish the static dashboard to GitHub Pages
+  id-token: write # required by deploy-pages
 
 concurrency:
   group: pipeline
@@ -30,7 +32,11 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # ~200 tickers: ~4 min of fetching + scoring + ~5 min to pre-render the site.
+    timeout-minutes: 30
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -76,3 +82,10 @@ jobs:
           git add -A
           git commit -qm "Warehouse snapshot $(date -u +%Y-%m-%dT%H:%MZ)"
           git push -qf origin publish:data
+      - name: Build the static dashboard
+        run: python web/build.py _site
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: _site
+      - id: deploy
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

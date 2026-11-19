@@ -8,8 +8,8 @@ interactive dashboard.
 It answers a simple question for a watchlist of tickers: **what is the mood
 around each name right now, and where is it shifting sharply?**
 
-**Live dashboard:** [news-sentiment-pipeline.streamlit.app](https://news-sentiment-pipeline-ciimybpm3cgvtknu3nw5ey.streamlit.app/)
-(if it has been idle, click the button to wake it; it starts in under a minute)
+**Live dashboard:** [pranav797.github.io/news-sentiment-pipeline](https://pranav797.github.io/news-sentiment-pipeline/)
+(a static site on GitHub Pages, rebuilt every 30 minutes; it never sleeps)
 
 ---
 
@@ -52,7 +52,7 @@ as a **monitoring and early-warning tool** — not a trading system.
   aggregate loop on an interval, with per-stage error isolation so one failing
   source never takes down a cycle.
 - **Serves the data** through a FastAPI service and a Streamlit + Plotly
-  dashboard covering 44 large caps across 7 sectors: sentiment overlaid on
+  dashboard covering 200 large caps across 10 sectors: sentiment overlaid on
   price, a sector-by-ticker market-mood map, sharp movers, and the latest
   scored headlines.
 
@@ -110,7 +110,7 @@ the writer and each other.
 | Storage        | DuckDB (embedded, SQL, time-series)       |
 | Scheduling     | APScheduler (in-process) or Prefect (orchestration) |
 | API            | FastAPI + Uvicorn                         |
-| Dashboard      | Streamlit + Plotly (dual-axis overlay)    |
+| Dashboard      | Streamlit + Plotly (dual-axis overlay); static GitHub Pages build for hosting |
 | Data handling  | pandas                                    |
 
 ## Data model
@@ -154,6 +154,9 @@ news-sentiment-pipeline/
 ├── dashboard/
 │   ├── app.py              # Streamlit dashboard
 │   └── requirements.txt    # lean dependencies for Streamlit Cloud
+├── web/
+│   ├── build.py            # pre-renders the dashboard as a static site
+│   └── index.html          # the static page (GitHub Pages)
 ├── flows/
 │   └── pipeline_flow.py    # Prefect orchestration of the pipeline
 ├── .streamlit/config.toml  # dashboard server hardening
@@ -265,24 +268,31 @@ as the scheduler.
 
 ## Deployment
 
-Two options: free hosting on GitHub Actions + Streamlit Community Cloud (no
-server to run), or self-hosting the full stack with Docker.
+Two options: free hosting on GitHub Actions + GitHub Pages (no server to run),
+or self-hosting the full stack with Docker.
 
-### Free hosting: GitHub Actions + Streamlit Community Cloud
+### Free hosting: GitHub Actions + GitHub Pages
 
 - **Pipeline:** `.github/workflows/pipeline.yml` runs every 30 minutes on GitHub
   Actions and publishes the warehouse to the repository's `data` branch.
-- **Dashboard:** Streamlit Community Cloud runs `dashboard/app.py`, which
-  downloads the latest published warehouse every 10 minutes.
+- **Dashboard:** the same run executes `web/build.py`, which pre-renders every
+  chart (per ticker and time window) to JSON using the Streamlit dashboard's own
+  queries and figures, and deploys it with `web/index.html` to GitHub Pages.
+  There is no server, so the site never sleeps and loads instantly; it is at
+  most 30 minutes behind the pipeline.
 
 Setup:
 
 1. Add the OpenAI key as a repository secret named `OPENAI_API_KEY`
    (Settings → Secrets and variables → Actions). Only the workflow can read it.
-2. On [share.streamlit.io](https://share.streamlit.io), create an app from this
-   repository with main file `dashboard/app.py` and Python 3.13. In the app's
-   Secrets, set `WAREHOUSE_REPO = "<owner>/<repo>"` (for a private repository,
-   also `GITHUB_TOKEN` with read-only access to its contents).
+2. Under Settings → Pages, set **Source** to **GitHub Actions**.
+
+To preview the static site locally after a pipeline run:
+
+```bash
+python web/build.py
+python -m http.server -d _site
+```
 
 LLM scoring is off by default. To turn it on, run the workflow manually
 (Actions → Pipeline → Run workflow) with `llm: on` and a number of hours, or:
@@ -295,8 +305,7 @@ gh workflow run pipeline.yml -f llm=off
 Only collaborators with write access can run it, and the run scores new
 headlines immediately; scoring switches off automatically when the hours expire.
 The hosted setup does not run the FastAPI service (run it locally or self-host).
-Streamlit Community Cloud apps sleep after 12 hours without visitors and wake on
-the next visit; the pipeline keeps running regardless. GitHub disables scheduled
+GitHub disables scheduled
 workflows in public repositories after 60 days without activity; re-enable it
 from the Actions tab if that happens.
 

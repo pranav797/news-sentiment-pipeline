@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Market Sentiment Radar</title>
+<meta name="description" content="Near-real-time news sentiment for 200 large caps, aligned with intraday prices.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@600;700&display=swap">
+<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@{{PLOTLY_VERSION}}/plotly.min.js"></script>
+<style>
+:root {
+  --bg: #0A0E1A; --panel: #121A2E; --side: #0D1324; --line: #1E2A45; --head: #16203A;
+  --text: #E2E8F0; --muted: #94A3B8; --cyan: #22D3EE; --green: #34D399; --red: #FB7185;
+  --amber: #FBBF24; --violet: #A78BFA; --link: #67E8F9;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 Inter, system-ui, sans-serif; }
+a { color: var(--link); }
+.layout { display: grid; grid-template-columns: 290px 1fr; min-height: 100vh; }
+aside { background: var(--side); border-right: 1px solid var(--line); padding: 20px 18px; }
+main { padding: 24px 28px; min-width: 0; }
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 1fr; }
+  aside { border-right: 0; border-bottom: 1px solid var(--line); padding: 16px; }
+  main { padding: 16px; }
+}
+h2, h3, h4 { font-family: "Space Grotesk", sans-serif; margin: 0; }
+aside h2 { font-size: 1.1rem; margin-bottom: 14px; }
+label.f { display: block; color: var(--muted); font-size: .8rem; margin: 16px 0 6px; }
+.pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.pill { background: var(--head); color: var(--text); border: 1px solid var(--line); border-radius: 999px;
+  padding: 4px 10px; font: inherit; font-size: .8rem; cursor: pointer; }
+.pill[aria-pressed="true"] { border-color: var(--cyan); color: var(--cyan); background: rgba(34,211,238,.1); }
+select, input[type=range] { width: 100%; }
+select { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px;
+  padding: 8px; font: inherit; }
+.seg { display: flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.seg .pill { flex: 1; border: 0; border-radius: 0; background: transparent; padding: 6px 0; }
+.check { display: flex; gap: 8px; align-items: center; margin-top: 16px; font-size: .9rem; }
+.note { color: var(--muted); font-size: .78rem; margin-top: 18px; }
+.hero { padding: 22px 26px; border-radius: 16px; border: 1px solid var(--line); margin-bottom: 10px;
+  background: radial-gradient(120% 160% at 0% 0%, rgba(34,211,238,.2) 0%, rgba(167,139,250,.12) 40%, rgba(10,14,26,0) 72%), #0F1628; }
+.hero h1 { margin: 0; font: 700 2.1rem/1.15 "Space Grotesk", sans-serif;
+  background: linear-gradient(90deg, #67E8F9 0%, #A78BFA 55%, #F0ABFC 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent; }
+.hero p { color: var(--muted); margin: 6px 0 0; font-size: .95rem; }
+.badges { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+.badge { font-size: .78rem; padding: 2px 10px; border-radius: 6px; font-weight: 500; }
+.b-green { color: var(--green); background: rgba(52,211,153,.12); }
+.b-amber { color: var(--amber); background: rgba(251,191,36,.12); }
+.b-gray { color: var(--muted); background: rgba(148,163,184,.12); }
+.b-blue { color: var(--cyan); background: rgba(34,211,238,.12); }
+.cards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 12px 0 18px; }
+@media (max-width: 1100px) { .cards { grid-template-columns: repeat(2, 1fr); } }
+.card { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: var(--panel); min-width: 0; }
+.card .k { color: var(--muted); font-size: .8rem; }
+.card .v { font-size: 1.6rem; font-weight: 600; }
+.card .d { font-size: .8rem; }
+.up { color: var(--green); } .down { color: var(--red); }
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 14px; overflow-x: auto; }
+.tab { background: none; border: 0; border-bottom: 2px solid transparent; color: var(--muted); font: inherit;
+  padding: 8px 12px; cursor: pointer; white-space: nowrap; }
+.tab[aria-selected="true"] { color: var(--cyan); border-bottom-color: var(--cyan); }
+.cap { color: var(--muted); font-size: .8rem; margin-top: 6px; }
+.mood { display: grid; grid-template-columns: 3fr 2fr; gap: 28px; }
+@media (max-width: 1100px) { .mood { grid-template-columns: 1fr; } }
+.tbl { width: 100%; overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+table { border-collapse: collapse; width: 100%; font-size: .85rem; }
+th { background: var(--head); color: var(--muted); font-weight: 500; text-align: left; }
+th, td { padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 10px 0 16px; }
+.empty { color: var(--muted); padding: 12px 0; }
+</style>
+</head>
+<body>
+<div class="layout">
+  <aside>
+    <h2>◉ Sentiment Radar</h2>
+    <label class="f">Sector</label><div class="pills" id="sectors"></div>
+    <label class="f" for="ticker">Ticker</label><select id="ticker"></select>
+    <label class="f">Window</label><div class="seg" id="windows"></div>
+    <label class="f" for="thr">Mover threshold: <span id="thrv"></span></label>
+    <input type="range" id="thr" min="0" max="2" step="0.1" value="0.3"
+      title="Minimum hour-over-hour change in sentiment to count as a sharp move.">
+    <label class="check"><input type="checkbox" id="cmp"> Show model comparison</label>
+    <p class="note">Headlines: Yahoo Finance · Prices: yfinance · Sentiment: GPT-4o-mini + FinBERT</p>
+  </aside>
+  <main>
+    <div class="hero"><h1>Market Sentiment Radar</h1>
+      <p id="sub">Near-real-time news sentiment, aligned with intraday prices · All times UTC</p></div>
+    <div class="badges" id="badges"></div>
+    <div id="body"><p class="empty">Loading…</p></div>
+  </main>
+</div>
+<script>
+const $ = (id) => document.getElementById(id);
+const el = (tag, attrs = {}, ...kids) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) k === "class" ? (e.className = v) : e.setAttribute(k, v);
+  e.append(...kids.filter((k) => k != null));
+  return e;
+};
+const sign = (v) => (v == null ? "—" : (v >= 0 ? "+" : "") + v.toFixed(2));
+const utc = (iso, opts, locale = "en-GB") => new Date(iso).toLocaleString(locale, { timeZone: "UTC", ...opts });
+const hm = (iso) => utc(iso, { hour: "2-digit", minute: "2-digit" });
+const dhm = (iso) => utc(iso, { weekday: "short", hour: "2-digit", minute: "2-digit" });
+const ymdhm = (iso) => utc(iso, { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }, "sv-SE"); // 2026-11-18 21:04
+const safeUrl = (u) => (typeof u === "string" && /^https?:\/\//i.test(u) ? u : null);
+const PLOT_CONFIG = { responsive: true, displaylogo: false };
+
+const state = { sector: null, ticker: "AAPL", win: "48h", thr: 0.3, cmp: true, tab: "chart" };
+let S, T;  // summary, current ticker payload
+const tickerCache = {};
+
+async function getJSON(url) {
+  const r = await fetch(url, { cache: "no-cache" });
+  if (!r.ok) throw new Error(`${url}: ${r.status}`);
+  return r.json();
+}
+async function loadTicker(t) {
+  // The query string busts the CDN cache whenever the site is rebuilt.
+  tickerCache[t] ??= getJSON(`data/t/${encodeURIComponent(t)}.json?v=${encodeURIComponent(S.generated_at)}`);
+  return tickerCache[t];
+}
+const label = (t) => `${t} · ${S.watchlist[t]?.[0] ?? t}`;
+
+function renderControls() {
+  const sectors = [...new Set(Object.values(S.watchlist).map((v) => v[1]))].sort();
+  $("sectors").replaceChildren(...sectors.map((s) => {
+    const b = el("button", { class: "pill", "aria-pressed": String(state.sector === s) }, s);
+    b.onclick = () => { state.sector = state.sector === s ? null : s; update(); };
+    return b;
+  }));
+  const tickers = Object.keys(S.watchlist).filter((t) => !state.sector || S.watchlist[t][1] === state.sector).sort();
+  if (!tickers.includes(state.ticker)) state.ticker = tickers[0];
+  $("ticker").replaceChildren(...tickers.map((t) => el("option", { value: t }, label(t))));
+  $("ticker").value = state.ticker;
+  $("windows").replaceChildren(...S.windows.map((w) => {
+    const b = el("button", { class: "pill", "aria-pressed": String(state.win === w) }, w);
+    b.onclick = () => { state.win = w; update(); };
+    return b;
+  }));
+  $("thrv").textContent = state.thr.toFixed(1);
+}
+
+function renderBadges() {
+  const b = (cls, text) => el("span", { class: `badge ${cls}` }, text);
+  const badges = [S.llm_live ? b("b-green", "⚡ LLM scoring live")
+    : S.finbert ? b("b-amber", "LLM paused · FinBERT scores new headlines")
+    : b("b-gray", "Sentiment scoring paused")];
+  const st = T?.status?.state;
+  if (st) badges.push({ open: b("b-green", "Market open"), closed: b("b-gray", "Market closed"),
+    delayed: b("b-amber", "No recent trades") }[st]);
+  const mins = Math.round((Date.now() - new Date(S.generated_at)) / 60000);
+  badges.push(b("b-blue", `Updated ${mins < 1 ? "just now" : mins + " min ago"} · refreshes every 30 min`));
+  $("badges").replaceChildren(...badges);
+}
+
+function card(k, v, d, dv) {
+  return el("div", { class: "card" }, el("div", { class: "k" }, k), el("div", { class: "v" }, v),
+    d ? el("div", { class: `d ${dv >= 0 ? "up" : "down"}` }, d) : null);
+}
+
+function movers() {
+  return S.signals.filter((s) => Math.abs(s.delta) >= state.thr - 1e-9);
+}
+
+function table(cols, rows) {
+  return el("div", { class: "tbl" }, el("table", {},
+    el("thead", {}, el("tr", {}, ...cols.map(([h]) => el("th", {}, h)))),
+    el("tbody", {}, ...rows.map((r) => el("tr", {}, ...cols.map(([, f, n]) => el("td", n ? { class: "n" } : {}, f(r))))))));
+}
+
+function plot(div, fig) {
+  Plotly.react(div, fig.data, fig.layout, PLOT_CONFIG);
+}
+
+function renderTab(pane) {
+  const w = T.windows[state.win];
+  if (state.tab === "chart") {
+    if (!w.chart) return pane.append(el("p", { class: "empty" }, `No data yet for ${state.ticker}. New tickers fill in within a few hours.`));
+    const div = el("div");
+    pane.append(div, el("p", { class: "cap" }, "Bars: average headline sentiment per hour (hatched = scored by FinBERT while LLM scoring is paused). Line: price."));
+    plot(div, w.chart);
+  } else if (state.tab === "mood") {
+    const left = el("div"), right = el("div");
+    pane.append(el("div", { class: "mood" }, left, right));
+    const fig = S.mood[state.win];
+    if (!fig) left.append(el("p", { class: "empty" }, "No headlines in this window yet."));
+    else { const div = el("div"); left.append(div, el("p", { class: "cap" }, `Tile size: articles · color: average sentiment over ${state.win}`)); plot(div, fig); }
+    const m = movers();
+    right.append(el("h4", {}, "Sentiment movers"), el("p", { class: "cap" }, `Hour-over-hour change ≥ ${state.thr.toFixed(1)}`),
+      m.length ? table([["Ticker", (r) => r.ticker], ["Company", (r) => S.watchlist[r.ticker]?.[0] ?? ""],
+        ["Now", (r) => sign(r.average_score), 1], ["Prev", (r) => sign(r.previous_score), 1], ["Δ", (r) => sign(r.delta), 1]], m)
+        : el("p", { class: "empty" }, "No sharp moves right now."));
+  } else if (state.tab === "news") {
+    if (!T.headlines.length) return pane.append(el("p", { class: "empty" }, "No scored headlines yet."));
+    pane.append(table([
+      ["Published (UTC)", (r) => ymdhm(r.published_at)],
+      ["Headline", (r) => { const u = safeUrl(r.url); return u ? el("a", { href: u, target: "_blank", rel: "noopener noreferrer" }, r.title) : r.title; }],
+      ["Label", (r) => r.sentiment],
+      ["Score", (r) => el("span", { class: r.score >= 0 ? "up" : "down" }, sign(r.score)), 1],
+      ["Topic", (r) => r.topic ?? ""],
+      ["Scored by", (r) => r.scorer],
+    ], T.headlines));
+  } else {
+    pane.append(el("p", { class: "cap" }, "Headlines scored by both models: the general LLM and the finance-tuned FinBERT. This set only grows while LLM scoring is switched on."));
+    const c = T.comparison;
+    if (!c.length) return pane.append(el("p", { class: "empty" }, "No headlines have been scored by both models yet."));
+    const dis = c.filter((r) => !r.labels_agree);
+    const agree = c.filter((r) => r.labels_agree).length / c.length;
+    pane.append(el("div", { class: "metrics" }, card("Headlines compared", String(c.length)),
+      card("Label agreement", `${Math.round(agree * 100)}%`), card("Disagreements", String(dis.length))),
+      el("h4", {}, "Where the models disagree"),
+      dis.length ? table([["Headline", (r) => r.title], ["LLM", (r) => r.llm_label], ["LLM score", (r) => sign(r.llm_score), 1],
+        ["FinBERT", (r) => r.finbert_label], ["FinBERT score", (r) => sign(r.finbert_score), 1]], dis)
+        : el("p", { class: "empty" }, "The two models agree on every scored headline."));
+  }
+}
+
+function renderBody() {
+  const w = T.windows[state.win], st = T.status, top = movers()[0];
+  let priceCard = card("Price", "—");
+  if (st) {
+    const k = { open: `Price · ${hm(st.as_of)} UTC`, closed: `Last close · ${dhm(st.as_of)} UTC`,
+      delayed: `Last trade · ${dhm(st.as_of)} UTC` }[st.state];
+    priceCard = card(k, `$${st.price.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+      w.return != null ? `${w.return >= 0 ? "+" : ""}${(w.return * 100).toFixed(2)}% last hour` : null, w.return);
+  }
+  const delta = w.sentiment != null && w.prev != null ? w.sentiment - w.prev : null;
+  const tabs = [["chart", `${state.ticker} chart`], ["mood", "Market mood"], ["news", "Headlines"]];
+  if (state.cmp && S.finbert) tabs.push(["cmp", "Model comparison"]);
+  if (!tabs.some(([id]) => id === state.tab)) state.tab = "chart";
+  const pane = el("div");
+  $("body").replaceChildren(
+    el("h3", {}, label(state.ticker)),
+    el("div", { class: "cards" },
+      card("Sentiment · latest hour", sign(w.sentiment), delta != null ? sign(delta) : null, delta),
+      card(`Articles · ${state.win}`, String(w.articles)),
+      priceCard,
+      top ? card("Biggest mover · watchlist", top.ticker, sign(top.delta), top.delta) : card("Biggest mover · watchlist", "—")),
+    el("div", { class: "tabs", role: "tablist" }, ...tabs.map(([id, text]) => {
+      const b = el("button", { class: "tab", role: "tab", "aria-selected": String(state.tab === id) }, text);
+      b.onclick = () => { state.tab = id; renderBody(); };
+      return b;
+    })),
+    pane);
+  renderTab(pane);
+}
+
+async function update() {
+  renderControls();
+  try {
+    T = await loadTicker(state.ticker);
+  } catch {
+    $("body").replaceChildren(el("p", { class: "empty" }, "Data is temporarily unavailable. Please refresh in a moment."));
+    return;
+  }
+  renderBadges();
+  renderBody();
+}
+
+(async () => {
+  try {
+    S = await getJSON("data/summary.json");
+  } catch {
+    $("body").replaceChildren(el("p", { class: "empty" }, "Data is temporarily unavailable. Please refresh in a moment."));
+    return;
+  }
+  $("sub").textContent = `Near-real-time news sentiment for ${Object.keys(S.watchlist).length} large caps, aligned with intraday prices · All times UTC`;
+  state.cmp = S.finbert;
+  $("cmp").checked = state.cmp;
+  $("cmp").disabled = !S.finbert;
+  $("cmp").onchange = (e) => { state.cmp = e.target.checked; renderBody(); };
+  $("ticker").onchange = (e) => { state.ticker = e.target.value; update(); };
+  $("thr").oninput = (e) => { state.thr = +e.target.value; renderControls(); renderBody(); };
+  update();
+})();
+</script>
+</body>
+</html>
