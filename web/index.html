@@ -32,8 +32,8 @@ label.f { display: block; color: var(--muted); font-size: .8rem; margin: 16px 0 
 .pill { background: var(--head); color: var(--text); border: 1px solid var(--line); border-radius: 999px;
   padding: 4px 10px; font: inherit; font-size: .8rem; cursor: pointer; }
 .pill[aria-pressed="true"] { border-color: var(--cyan); color: var(--cyan); background: rgba(34,211,238,.1); }
-select, input[type=range] { width: 100%; }
-select { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px;
+select, input[type=range], input[type=search] { width: 100%; }
+select, input[type=search] { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px;
   padding: 8px; font: inherit; }
 .seg { display: flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
 .seg .pill { flex: 1; border: 0; border-radius: 0; background: transparent; padding: 6px 0; }
@@ -78,6 +78,9 @@ td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowra
 <div class="layout">
   <aside>
     <h2>◉ Sentiment Radar</h2>
+    <label class="f" for="search">Search</label>
+    <input type="search" id="search" list="all-tickers" placeholder="Ticker or company, e.g. NVDA or Nvidia" autocomplete="off">
+    <datalist id="all-tickers"></datalist>
     <label class="f">Sector</label><div class="pills" id="sectors"></div>
     <label class="f" for="ticker">Ticker</label><select id="ticker"></select>
     <label class="f">Window</label><div class="seg" id="windows"></div>
@@ -110,7 +113,7 @@ const ymdhm = (iso) => utc(iso, { year: "numeric", month: "2-digit", day: "2-dig
 const safeUrl = (u) => (typeof u === "string" && /^https?:\/\//i.test(u) ? u : null);
 const PLOT_CONFIG = { responsive: true, displaylogo: false };
 
-const state = { sector: null, ticker: "AAPL", win: "48h", thr: 0.3, cmp: true, tab: "chart" };
+const state = { sector: null, ticker: "AAPL", win: "48h", thr: 0.3, cmp: false, tab: "chart" };
 let S, T;  // summary, current ticker payload
 const tickerCache = {};
 
@@ -270,11 +273,28 @@ async function update() {
     return;
   }
   $("sub").textContent = `Near-real-time news sentiment for ${Object.keys(S.watchlist).length} large caps, aligned with intraday prices · All times UTC`;
-  state.cmp = S.finbert;
   $("cmp").checked = state.cmp;
   $("cmp").disabled = !S.finbert;
   $("cmp").onchange = (e) => { state.cmp = e.target.checked; renderBody(); };
   $("ticker").onchange = (e) => { state.ticker = e.target.value; update(); };
+  const all = Object.keys(S.watchlist).sort();
+  $("all-tickers").replaceChildren(...all.map((t) => el("option", { value: label(t) })));
+  // Accepts a picked suggestion ("NVDA · NVIDIA"), an exact ticker, or part of a ticker/company name.
+  const search = (q) => {
+    q = q.split(" · ")[0].trim().toUpperCase();
+    if (!q) return;
+    const t = all.find((t) => t === q) ?? all.find((t) => label(t).toUpperCase().includes(q));
+    if (!t) return;
+    if (state.sector && S.watchlist[t][1] !== state.sector) state.sector = null;
+    state.ticker = t;
+    $("search").value = "";
+    $("search").blur();
+    update();
+  };
+  $("search").onchange = (e) => search(e.target.value);  // Enter
+  $("search").oninput = (e) => {  // picking a suggestion
+    if (!e.inputType || e.inputType === "insertReplacementText") search(e.target.value);
+  };
   $("thr").oninput = (e) => { state.thr = +e.target.value; renderControls(); renderBody(); };
   update();
 })();
